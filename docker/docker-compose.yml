@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  fastapi:
+    build: ../serving/fastapi
+    ports:
+      - "8000:8000"
+  bentoml:
+    build: ../serving/bentoml
+    ports:
+      - "3000:3000"
+  triton:
+    image: nvcr.io/nvidia/tritonserver:latest
+    volumes:
+      - ../serving/triton/models:/models
+    ports:
+      - "8001:8001"
