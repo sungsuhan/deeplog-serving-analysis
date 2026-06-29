@@ -1,17 +1,35 @@
+# Template config — actual dims are written by setup_model.py at deploy time.
+# This file is checked into git as a reference; the live version lives in
+# serving/triton/models/deeplog/config.pbtxt (git-ignored).
+
 name: "deeplog"
 platform: "pytorch_libtorch"
-max_batch_size: 8
+max_batch_size: 64
+
 input [
   {
     name: "input__0"
     data_type: TYPE_FP32
-    dims: [ -1, 1 ]
+    dims: [ -1, -1 ]    # [window_size-1, num_classes]  — filled in by setup_model.py
   }
 ]
+
 output [
   {
     name: "output__0"
     data_type: TYPE_FP32
-    dims: [ -1, 1 ]
+    dims: [ -1 ]        # [num_classes]  — filled in by setup_model.py
+  }
+]
+
+dynamic_batching {
+  preferred_batch_size: [ 8, 16, 32, 64 ]
+  max_queue_delay_microseconds: 100
+}
+
+instance_group [
+  {
+    kind: KIND_GPU
+    count: 1
   }
 ]

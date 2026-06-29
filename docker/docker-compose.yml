@@ -1,16 +1,58 @@
 version: '3.8'
 services:
   fastapi:
-    build: ../serving/fastapi
+    build:
+      context: ..
+      dockerfile: serving/fastapi/Dockerfile
     ports:
       - "8000:8000"
+    volumes:
+      - ../model/checkpoints:/workspace/model/checkpoints:ro
+    environment:
+      - DATASET=hdfs
+      - CKPT_DIR=/workspace/model/checkpoints/hdfs
+
   bentoml:
-    build: ../serving/bentoml
+    build:
+      context: ..
+      dockerfile: serving/bentoml/Dockerfile
     ports:
       - "3000:3000"
+    volumes:
+      - bentoml_home:/root/bentoml   # BentoML model store (populated by save_model.py on host)
+    environment:
+      - BENTOML_MODEL_NAME=deeplog
+      - BENTOML_MODEL_TAG=latest
+
   triton:
-    image: nvcr.io/nvidia/tritonserver:latest
+    image: nvcr.io/nvidia/tritonserver:24.08-py3
     volumes:
       - ../serving/triton/models:/models
     ports:
       - "8001:8001"
+    command: tritonserver --model-repository=/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  triton-wrapper:
+    build:
+      context: ..
+      dockerfile: serving/triton/Dockerfile
+    ports:
+      - "8002:8002"
+    volumes:
+      - ../serving/triton/models:/workspace/serving/triton/models:ro
+    environment:
+      - TRITON_URL=triton:8001
+      - MODEL_NAME=deeplog
+      - MODEL_REPO=/workspace/serving/triton/models
+    depends_on:
+      - triton
+
+volumes:
+  bentoml_home:
