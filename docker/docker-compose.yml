@@ -1,5 +1,31 @@
 version: '3.8'
 services:
+
+  # ── Kafka 인프라 ─────────────────────────────────────────────────────────────
+  # KRaft 모드: Zookeeper 없이 Kafka만으로 클러스터를 운영하는 최신 방식
+  kafka:
+    image: bitnami/kafka:3.7
+    ports:
+      - "9092:9092"   # 호스트(로컬/EC2)에서 접근할 때 사용
+    environment:
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      # 내부(컨테이너 간): PLAINTEXT://kafka:29092
+      # 외부(호스트에서): PLAINTEXT_HOST://localhost:9092
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:29092,CONTROLLER://:9093,PLAINTEXT_HOST://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── ML 서빙 스택 ──────────────────────────────────────────────────────────────
   fastapi:
     build:
       context: ..
@@ -19,7 +45,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - bentoml_home:/root/bentoml   # BentoML model store (populated by save_model.py on host)
+      - bentoml_home:/root/bentoml
     environment:
       - BENTOML_MODEL_NAME=deeplog
       - BENTOML_MODEL_TAG=latest
