@@ -8,22 +8,22 @@ mkdir -p "$RAW_DIR"
 ZENODO_BASE="https://zenodo.org/record/8196385/files"
 
 download_and_verify() {
-    local name="$1"
-    local url="$2"
-    local dest="$RAW_DIR/$name.zip"
+  local name="$1"
+  local url="$2"
+  local dest="$RAW_DIR/$name.zip"
 
-    if [[ -d "$RAW_DIR/$name" ]]; then
-        echo "[SKIP] $name already exists at $RAW_DIR/$name"
-        return
-    fi
+  if [[ -d "$RAW_DIR/$name" ]]; then
+    echo "[SKIP] $name already exists at $RAW_DIR/$name"
+    return
+  fi
 
-    echo "[DOWNLOAD] $name ..."
-    curl -L --retry 3 --progress-bar -o "$dest" "$url"
+  echo "[DOWNLOAD] $name ..."
+  curl -L --retry 3 --progress-bar -o "$dest" "$url"
 
-    echo "[EXTRACT] $name ..."
-    unzip -q "$dest" -d "$RAW_DIR/$name"
-    rm "$dest"
-    echo "[DONE] $name -> $RAW_DIR/$name"
+  echo "[EXTRACT] $name ..."
+  unzip -q "$dest" -d "$RAW_DIR/$name"
+  rm "$dest"
+  echo "[DONE] $name -> $RAW_DIR/$name"
 }
 
 download_and_verify "HDFS_1" "$ZENODO_BASE/HDFS_1.zip"
