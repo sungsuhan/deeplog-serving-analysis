@@ -26,7 +26,7 @@ download_and_verify() {
   echo "[DONE] $name -> $RAW_DIR/$name"
 }
 
-download_and_verify "HDFS_1" "$ZENODO_BASE/HDFS_1.zip"
+download_and_verify "HDFS_1" "$ZENODO_BASE/HDFS_v1.zip"
 download_and_verify "BGL"    "$ZENODO_BASE/BGL.zip"
 
 echo ""
