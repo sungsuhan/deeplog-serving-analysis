@@ -224,7 +224,9 @@ def main() -> None:
   print(f"\n[DONE] Best epoch: {best_epoch}  val_loss: {best_val_loss:.4f}")
 
   # 최적 가중치 로드 후 TorchScript 변환
-  model.load_state_dict(torch.load(ckpt_dir / "deeplog_best.pt", map_location=device))
+  model.load_state_dict(torch.load(
+    ckpt_dir / "deeplog_best.pt", map_location=device, weights_only=True
+  ))
   export_torchscript(model, window_size, num_classes, device, ckpt_dir / "deeplog.ts")
 
   # 세 서빙 스택이 공유하는 설정 파일 저장
