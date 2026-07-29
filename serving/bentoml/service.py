@@ -29,29 +29,22 @@ from typing import Optional
 import bentoml
 import torch
 import torch.nn.functional as F
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT / "model"))
 from deeplog import DeepLog  # noqa: E402
 
 
-# ── 요청/응답 스키마 — FastAPI와 동일하게 유지 (공정한 비교를 위해) ──────────────
-class PredictRequest(BaseModel):
-  log_keys: list[int]
-  """입력 윈도우: 정수 로그 키 목록, 길이 == window_size - 1"""
-
-  next_key: Optional[int] = None
-  """실제 관측된 다음 로그 키. 제공하면 is_anomaly가 계산됨."""
-
-  @field_validator("log_keys")
-  @classmethod
-  def _check_nonempty(cls, v: list[int]) -> list[int]:
-    if not v:
-      raise ValueError("log_keys는 비어있을 수 없습니다")
-    return v
-
-
+# ── 응답 스키마 — FastAPI와 동일하게 유지 (공정한 비교를 위해) ────────────────────
+#
+# 요청 스키마는 별도 Pydantic 모델(PredictRequest)로 감싸지 않는다.
+# BentoML 1.3 신규 SDK는 @bentoml.api 메서드의 파라미터가 Pydantic 모델 하나면
+# 그 모델을 파라미터 이름으로 한 번 더 감싼 JSON({"req": {...}})을 요구한다 —
+# FastAPI(`def predict(req: PredictRequest)` → 바디를 곧바로 바인딩)·Triton
+# 래퍼와 다른 요청 형태가 되어 "동일 요청 스키마" 규칙이 깨진다. log_keys/next_key를
+# 개별 파라미터로 선언하면 파라미터 이름이 곧 최상위 JSON 필드가 되어 flat body가
+# 유지된다.
 class PredictResponse(BaseModel):
   top_candidates: list[int]
   probabilities:  list[float]
@@ -126,19 +119,23 @@ class DeepLogService:
     }
 
   @bentoml.api(route="/predict")
-  def predict(self, req: PredictRequest) -> PredictResponse:
+  def predict(self, log_keys: list[int],
+             next_key: Optional[int] = None) -> PredictResponse:
+    if not log_keys:
+      raise bentoml.exceptions.InvalidArgument("log_keys는 비어있을 수 없습니다")
+
     t0 = time.perf_counter()
 
     try:
-      top_candidates, probabilities = self._infer(req.log_keys)
+      top_candidates, probabilities = self._infer(log_keys)
     except ValueError as exc:
       raise bentoml.exceptions.InvalidArgument(str(exc)) from exc
 
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
     is_anomaly = (
-      req.next_key not in top_candidates
-      if req.next_key is not None
+      next_key not in top_candidates
+      if next_key is not None
       else None
     )
 

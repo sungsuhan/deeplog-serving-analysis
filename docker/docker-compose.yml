@@ -46,6 +46,7 @@ services:
       - "3000:3000"
     volumes:
       - bentoml_home:/root/bentoml
+      - ../model/checkpoints:/workspace/model/checkpoints:ro
     environment:
       - BENTOML_MODEL_NAME=deeplog
       - BENTOML_MODEL_TAG=latest
@@ -56,14 +57,18 @@ services:
       - ../serving/triton/models:/models
     ports:
       - "8001:8001"
-    command: tritonserver --model-repository=/models
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # Triton 기본 포트는 HTTP=8000/GRPC=8001/Metrics=8002이지만, 이 프로젝트는
+    # .env.example·CLAUDE.md 전반에서 "8001 = Triton HTTP"로 문서화돼 있다.
+    # 기본값 그대로 두면 8001이 GRPC가 되어 래퍼(tritonclient.http)가 붙지
+    # 못하므로, HTTP를 8001로 명시 지정하고 GRPC/metrics는 충돌 없게 옮긴다.
+    command: >
+      tritonserver --model-repository=/models
+      --http-port=8001 --grpc-port=8003 --metrics-port=8004
+    # `deploy.resources.reservations.devices`(Swarm 지향 문법)는 Docker Desktop
+    # WSL2 백엔드에서 "nvml error: not supported: unknown"로 실패했다.
+    # `gpus:` 축약 문법은 `docker run --gpus all`과 동일 경로를 타 로컬에서
+    # 확인됐고, 네이티브 Linux Docker Engine(EC2)에서도 동일하게 지원된다.
+    gpus: all
 
   triton-wrapper:
     build:
