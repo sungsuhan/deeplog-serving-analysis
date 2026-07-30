@@ -6,6 +6,10 @@
 #   2. CUDA Toolkit
 #   3. Docker Engine + docker compose 플러그인 (docker-compose.yml은 `docker compose` v2 문법 사용)
 #   4. NVIDIA Container Toolkit (컨테이너 안에서 GPU 인식 — Triton의 KIND_GPU에 필수)
+#   5. git + AWS CLI v2 (bootstrap_ec2.sh가 레포 clone·S3 동기화에 사용)
+#
+# 이 스크립트가 끝나면 OS 레벨 준비는 끝난 상태 — 코드/데이터를 올리고
+# 서빙을 준비하는 건 bootstrap_ec2.sh(SSH로 접속해 별도 실행)가 담당한다.
 #
 # 사용법:
 #   - launch_spot_instance.sh가 user-data로 이 파일을 그대로 넘겨 부팅 시 자동 실행.
@@ -83,11 +87,33 @@ else
   log "nvidia-container-toolkit 이미 설치됨 — 건너뜀"
 fi
 
+# ── 5. git + AWS CLI v2 ────────────────────────────────────────────────────
+if ! command -v git &>/dev/null; then
+  log "git 설치"
+  apt-get install -y --no-install-recommends git
+else
+  log "git 이미 설치됨 — 건너뜀"
+fi
+
+if ! command -v aws &>/dev/null; then
+  log "AWS CLI v2 설치"
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  apt-get install -y --no-install-recommends unzip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+  rm -rf /tmp/awscliv2.zip /tmp/aws
+else
+  log "AWS CLI 이미 설치됨 — 건너뜀 ($(aws --version))"
+fi
+
 log "설치 완료."
 log "검증 명령 (재부팅 후 SSH로 접속해 직접 실행):"
 log "  nvidia-smi"
 log "  docker compose version"
 log "  docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi"
+log "  aws sts get-caller-identity   # IAM 자격 확인 (인스턴스 프로파일 또는 aws configure 필요)"
+log ""
+log "다음 단계: bootstrap_ec2.sh로 코드/데이터/체크포인트를 가져오세요."
 
 touch /tmp/setup_instance_done
 

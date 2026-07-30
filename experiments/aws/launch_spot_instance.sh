@@ -108,8 +108,16 @@ setup_instance.sh는 user-data로 자동 실행되며 완료까지 약 5~10분 �
 완료 후 검증:
   ssh -i <key.pem> ubuntu@$PUBLIC_IP 'nvidia-smi && docker compose version'
 
-스팟 인스턴스는 가격 급등 시 회수될 수 있습니다 — 체크포인트/결과는 주기적으로
-로컬 또는 S3로 백업하세요.
+다음 단계 (SSH로 접속해서):
+  1. (로컬에서 먼저) bash experiments/aws/sync_to_s3.sh — 데이터/체크포인트를 S3에 올려둔다
+  2. export DEEPLOG_S3_BUCKET=<bucket> && aws configure
+  3. curl -fsSL https://raw.githubusercontent.com/sungsuhan/deeplog-serving-analysis/main/experiments/aws/bootstrap_ec2.sh | bash
+     (또는 git clone 후 bash experiments/aws/bootstrap_ec2.sh)
+  4. nohup bash experiments/aws/spot_backup_watcher.sh > /tmp/spot_watcher.log 2>&1 &
+  5. bash experiments/run_benchmark.sh hdfs
+
+스팟 인스턴스는 가격 급등 시 회수될 수 있습니다 — 3~4단계로 체크포인트/결과가
+주기적으로 S3에 백업되도록 반드시 워처를 띄워두세요.
 
 종료(과금 중단):
   aws ec2 terminate-instances --region $REGION --instance-ids $INSTANCE_ID
