@@ -14,6 +14,27 @@ DeepLog(LSTM 기반 로그 이상탐지 모델)을 FastAPI, BentoML, Triton 세 
 
 ---
 
+## 현재 스코프 — 2026-08-11 기말 발표
+
+**이 섹션은 위 §연구 목적(졸업논문 전체 스코프)과 구분되는, 이번 라운드에만
+적용되는 제약이다.** 발표일이 8/11로 확정되며 실질 가용 기간이 약 2주로 줄어,
+세 프레임워크 비교라는 연구 novelty의 핵심은 그대로 지키고 데이터셋 범위만 좁혔다.
+
+- **데이터셋: HDFS만.** BGL은 이번 라운드에서 제외 — 학습·벤치마크는 물론 EDA도
+  하지 않는다. BGL은 후속 연구/졸업논문 스코프에서 다룬다(전처리 코드와
+  `data/processed/bgl/`은 이미 존재하지만 이번 라운드 결과물에는 포함하지 않음).
+- **프레임워크: FastAPI / BentoML / Triton 3종 그대로.** 축소하지 않는다 — 스코프를
+  좁힐 때 가장 마지막에 건드릴 항목.
+- **부하 단계: 저·중·고 3단계 그대로.**
+- **반복 측정: 3사이클.** 원래 계획은 5사이클이었으나 시간 제약으로 축소
+  (`experiments/run_benchmark.sh`의 `CYCLES` 기본값과 일치).
+- **자원 사용률(CPU/GPU) 로깅: 포함.** `experiments/benchmark.py`의
+  `--container`/`--monitor-gpu` 옵션으로 측정.
+
+축소 배경과 결정 과정은 EXPERIMENT.md "스코프 결정 이력"을 참고.
+
+---
+
 ## 기술 스택
 
 | 계층 | 기술 |
@@ -85,7 +106,9 @@ bash experiments/run_benchmark.sh
 다음을 직접 실행해 확인한다.
 
 - **서빙 코드(`serving/*`) 변경 후**: 세 프레임워크 모두 기동한 상태에서
-  1. `GET /health` — 세 곳 모두 정상 응답하는지
+  1. `/health` — 세 곳 모두 정상 응답하는지. **BentoML만 GET이 아니라 POST**로
+     호출해야 한다(BentoML 1.3 신규 SDK의 `@bentoml.api`는 POST 전용 — 로컬
+     검증에서 실측 확인됨, 2026-07-29). FastAPI·Triton 래퍼는 GET.
   2. 동일한 `log_keys` 입력으로 `POST /predict`를 세 프레임워크에 각각 호출 —
      `top_candidates`/`probabilities`/`is_anomaly`/`latency_ms` **응답 스키마가
      동일한 키·타입**인지, 같은 체크포인트를 로드했다면 `top_candidates`가

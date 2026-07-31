@@ -2,7 +2,8 @@
 
 > 이 문서는 **코드 없이 논문을 쓰는 사람(채팅 Claude/ChatGPT 등)을 위한 스냅샷**입니다.
 > 소스는 항상 코드이고, 이 문서는 특정 시점의 재생성 가능한 요약본입니다.
-> **마지막 갱신: 2026-07-15, 데이터 파이프라인 완료 + 벤치마크 측정 규칙 확정 시점.**
+> **마지막 갱신: 2026-07-30, HDFS 학습 완료 + 세 프레임워크 로컬 검증 완료 +
+> EC2 준비(코드/스크립트) 완료 시점.**
 > 코드가 바뀌면 이 문서도 다시 생성해야 합니다 — 특히 하이퍼파라미터·설정값은
 > 아래 표만 믿지 말고 실제 config 파일과 대조하세요.
 
@@ -12,17 +13,45 @@
 
 | 단계 | 상태 | 비고 |
 |---|---|---|
-| 1. 환경 설정 (.env) | ✅ 완료 | 코드가 실제로 읽는 값은 DATASET/CKPT_DIR/BENTOML_*/TRITON_* 뿐. AWS 키·Kafka bootstrap은 어디서도 안 읽음(문서용 placeholder) |
-| 2. 데이터 다운로드·전처리 | ✅ 완료 | 아래 §2 참조 |
-| 3. DeepLog 학습 | ⬜ 미실행 | 코드(`model/train.py`)는 존재, 체크포인트 없음 |
-| 4. 모델 변환/패키징 (Triton ONNX·TorchScript, BentoML) | ⬜ 미실행 | 코드는 존재 |
-| 5. Docker 스택 통합·스모크 테스트 | ⬜ 미실행 | |
-| 6. 벤치마크 실행 | ⬜ 미실행 | 코드(`experiments/benchmark.py`)는 존재·완성 |
-| 7. 결과 시각화 | ⬜ 미실행 | |
+| 1. 환경 설정 (.env) | ✅ 완료 | `DEEPLOG_S3_BUCKET` 추가됨(§6) |
+| 2. 데이터 다운로드·전처리 | ✅ 완료(HDFS·BGL 모두) | §2 참조. 단 **이번 기말 스코프는 HDFS만** — §스코프 참고 |
+| 3. DeepLog 학습 | ✅ 완료(HDFS만) | §3 참조. BGL은 스코프 밖 |
+| 4. 모델 변환/패키징 (Triton TorchScript, BentoML) | ✅ 완료 | §3·§4 참조 |
+| 5. Docker 스택 통합·스모크 테스트 | ✅ 완료(로컬) | §4 참조 — 버그 5개 발견·수정 |
+| 6. EC2 인프라 준비 | ✅ 스크립트·AWS 리소스 완료, ⬜ **spot quota 승인 대기 중** | §6 참조 |
+| 7. 벤치마크 실행 | ⬜ 미실행 | quota 승인 후 EC2에서 실행 예정 |
+| 8. 결과 시각화 | ⬜ 미실행 | 7단계 완료 후 |
 
-**즉 지금 이 시점에서 논문에 "확정"으로 쓸 수 있는 건 데이터셋 통계뿐이고,
-모델 성능·서빙 벤치마크 수치는 전부 아직 존재하지 않습니다.** 방법론(설계) 서술은
-가능하지만 결과(수치) 서술은 6~7단계 완료 후에나 가능합니다.
+**즉 지금 이 시점에서 논문에 "확정"으로 쓸 수 있는 건 데이터셋 통계 + HDFS
+학습 결과(수렴 loss)뿐이고, 서빙 프레임워크 간 성능 비교 수치는 EC2 스팟
+quota 승인 후에나 나온다.**
+
+---
+
+## 스코프 결정 이력
+
+### 2026-07-30 — 기말(2026-08-11 발표) 스코프를 졸업논문 스코프에서 분리
+
+**배경**: 발표일이 8/11로 확정되며 실질 가용 기간이 약 2주로 줄었다. 세
+프레임워크(FastAPI/BentoML/Triton) 비교라는 연구 novelty의 핵심은 그대로
+유지하면서, 시간이 부족할 때 가장 먼저 줄일 수 있는 축을 골라야 했다.
+
+**결정**: 데이터셋 범위를 HDFS 하나로 좁혔다(BGL 학습·벤치마크·EDA 전부
+제외). 프레임워크 수·부하 단계(저/중/고)는 줄이지 않았다 — 이게 연구의
+핵심 기여이기 때문. 대신 반복 측정 사이클을 원래 계획한 5회에서 3회로
+줄여 전체 벤치마크 소요 시간을 더 확보했다.
+
+**변경 사항 요약**:
+- 데이터셋: HDFS만 (BGL 코드·전처리 산출물은 남겨두되 이번 결과물에서 제외)
+- 프레임워크: FastAPI / BentoML / Triton 3종 유지
+- 부하 단계: 저/중/고 3단계 유지
+- 반복 측정: 5사이클 → **3사이클** (`experiments/run_benchmark.sh`의
+  `CYCLES` 기본값)
+- 자원 사용률(CPU/GPU) 로깅: 유지 (`experiments/benchmark.py`
+  `--container`/`--monitor-gpu`)
+
+현재 스코프 규칙은 CLAUDE.md "현재 스코프 — 2026-08-11 기말 발표" 섹션에
+있음 — 이 문서(EXPERIMENT.md)는 "왜"를, CLAUDE.md는 "지금 무엇을"을 기록한다.
 
 ---
 
@@ -32,11 +61,16 @@
   BentoML, Triton)의 선택이 추론 지연시간·처리량에 미치는 영향과, 부하 조건별
   트레이드오프.
 - **모델은 고정**: DeepLog(Du et al., 2017) 구현·개선은 연구 범위 밖. 세 서빙
-  구현은 **동일 가중치·동일 전처리**를 공유해야 함 (`model/train.py`가 한 번
-  학습한 체크포인트를 FastAPI/BentoML/Triton이 그대로 로드).
+  구현은 **동일 가중치·동일 전처리**를 공유 — `model/train.py`가 한 번 학습한
+  체크포인트를 FastAPI/BentoML/Triton이 그대로 로드하며, 로컬 검증에서 세
+  프레임워크가 동일 입력에 사실상 동일 출력(top-1 확률 소수점 7자리까지 일치)을
+  냄을 확인함(§4).
 - **비교 대상**: FastAPI(베이스라인, 순수 PyTorch) / BentoML(범용 ML 서빙) /
   Triton(GPU 고성능 서빙, dynamic batching)
-- **실험 환경**: AWS EC2 g4dn.xlarge (T4 GPU 16GB) — 아직 인스턴스 미기동.
+- **이번 기말 스코프**: HDFS만 — 위 "스코프 결정 이력" 참고. 이하 §2의 BGL
+  관련 내용은 전처리 코드가 존재한다는 기록일 뿐, 이번 라운드 결과물이 아님.
+- **실험 환경**: AWS EC2 g4dn.xlarge (T4 GPU 16GB) — §6 참조, spot quota
+  승인 대기 중.
 
 ---
 
@@ -52,7 +86,7 @@
   확인. 즉 v7→v8 버전업은 Android·HDFS_v2/v3 등 다른 데이터셋 추가일 뿐, HDFS_1/BGL
   자체는 여러 버전에 걸쳐 변경되지 않음.
 
-### 2.2 HDFS_1
+### 2.2 HDFS_1 — **이번 기말 스코프**
 
 - LogHub Zenodo 패키지에는 **라인 단위 구조화 CSV(`HDFS.log_structured.csv`)가
   없음** — 대신 `preprocessed/Event_traces.csv`에 **BlockId(세션)별로 이미 파싱된
@@ -72,7 +106,7 @@
   | test.npy / test_labels.npy | (6,043,092, 10) |
   | 윈도우 단위 이상 비율 | 2.97% |
 
-### 2.3 BGL
+### 2.3 BGL — **이번 기말 스코프 제외** (전처리 산출물은 존재, 후속 연구용)
 
 - LogHub Zenodo 패키지에는 **raw 로그(`BGL.log`)만 존재**, 템플릿·구조화 파일이
   전혀 없음 → **Drain3 기반 로그 파서를 신규 구현** (`data/preprocess.py`의
@@ -80,13 +114,10 @@
   - 파라미터: `sim_th=0.5`, `depth=4` (Zhu et al., ICSE-SEIP 2019 벤치마크의 BGL
     튜닝값을 따름)
   - 마스킹: hex 주소(`0x...`), IP, 순수 숫자를 `<*>`로 치환 후 클러스터링
-  - 라인 포맷: `<Label> <Timestamp> <Date> <Node> <Time> <NodeRepeat> <Type> <Component> <Level> <Content>`
-    — 첫 필드가 `-`면 정상, 아니면 알람 타입(라벨은 원본에 이미 존재, 파서는
-    EventId만 새로 부여)
   - 파싱 결과는 `data/raw/BGL/BGL.log_structured.csv`로 캐싱 (재실행 시 재파싱 안 함)
 - 세션 개념이 없어 **전역 슬라이딩 윈도우**(`WINDOW_SIZE=10`, step=1) 사용. 윈도우
   내 라인 중 하나라도 이상이면 그 윈도우는 이상으로 라벨링.
-- **최종 통계**:
+- **최종 통계** (참고용 — 이번 라운드에서 학습/벤치마크에 쓰지 않음):
 
   | 항목 | 값 |
   |---|---|
@@ -95,30 +126,38 @@
   | Drain 추출 템플릿(vocab) 수 | 991 |
   | train_normal.npy | (4,323,231, 10) |
   | test.npy / test_labels.npy | (4,713,484, 10) |
-  | 윈도우 단위 이상 비율 | 8.28% (윈도우 내 이상 라인 1개만 있어도 전체 윈도우가 이상 처리되므로 라인 단위보다 높음) |
+  | 윈도우 단위 이상 비율 | 8.28% |
 
 ### 2.4 재현 환경
 
-- Python 3.11.9 venv (`.venv/`, 프로젝트 로컬 global Python은 3.13이라 torch/numpy
-  구버전과 비호환 — 3.11로 별도 설치)
+- Python 3.11.9 venv (`.venv/`, 로컬 global Python은 3.13이라 torch/numpy
+  구버전과 비호환 — 3.11로 별도 설치). **EC2(Ubuntu 22.04)에서는 시스템 기본
+  python3(3.10)로 충분** — 호스트에서는 벤치마크 클라이언트(`experiments/`)만
+  돌리고 torch/bentoml은 컨테이너 안에서만 쓰기 때문(§6).
 - `data/requirements.txt`: `numpy==1.26.4`, `pandas==2.2.3`, `drain3==0.9.11`
 - 데이터·전처리 산출물은 `.gitignore`로 제외 (`data/raw/`, `data/processed/`) —
   용량 문제(raw만 2.5GB) 때문에 저장소에는 스크립트만 커밋, 산출물은 각자 재생성.
 
 ---
 
-## 3. 모델 — DeepLog (`model/deeplog.py`, `model/train.py`)
+## 3. 모델 — DeepLog (`model/deeplog.py`, `model/train.py`) — **HDFS 학습 완료**
 
 - **구조**: 2-layer LSTM → Linear. 입력은 로그 키 시퀀스의 one-hot 인코딩
   `(batch, window_size-1, num_classes)`, 출력은 다음 로그 키에 대한 클래스 로짓
   `(batch, num_classes)`. 임베딩 레이어 없음(원 논문 방식, vocab이 작아 one-hot으로 충분).
 - **학습**: 정상 세션/윈도우만으로 비지도 학습(다음 로그 키 예측, CrossEntropyLoss).
   val_loss 기준 best checkpoint 저장.
+- **배치 처리 — DataLoader를 쓰지 않는다**: 원래는 `torch.utils.data.DataLoader`
+  (num_workers=2)를 썼으나, 이 모델(hidden=64) 규모에서는 Windows의 멀티프로세스
+  워커 스폰 오버헤드가 실제 순전파/역전파 시간보다 커서 병목이었다(1에폭
+  624.4s). 전체 정상 시퀀스를 텐서로 메모리에 올려두고 메인 프로세스에서 직접
+  배치를 슬라이싱 + one-hot을 배치 단위로 벡터화하는 방식으로 바꿔 520.5s로
+  단축(§3.1). `split_train_val()`/`_batch_indices()`/`_onehot_batch()` 참고.
 - **이상 판정**: 추론 시 실제 다음 키가 top-g(`num_candidates`) 예측 안에 없으면
   anomaly.
-- **기본 하이퍼파라미터** (논문 Du et al. 2017 기준값, `train.py` 상단 상수):
+- **하이퍼파라미터** (`model/train.py` 상단 상수, HDFS 학습에 그대로 사용):
 
-  | 파라미터 | 기본값 |
+  | 파라미터 | 값 |
   |---|---|
   | hidden_size | 64 |
   | num_layers | 2 |
@@ -128,15 +167,36 @@
   | val_split | 0.1 |
   | num_candidates (top-g) | 9 |
 
-- **산출물** (`model/checkpoints/{dataset}/`, 아직 생성 안 됨):
+- **학습 결과 (HDFS, 2026-07-29 완료)**:
+  - Best epoch: **27**, val_loss **0.1775** (최종 30에폭 val_loss도 0.1775로
+    사실상 수렴, train_loss 0.1778)
+  - 총 학습 시간 약 **3시간 40분**(30에폭, 에폭당 평균 440초, 로컬 CPU 4코어
+    기준 — 로컬 GPU(MX450, VRAM 2GB)로 테스트했을 때 오히려 CPU보다 느렸음
+    [548.8s vs 520.5s/epoch], 이 모델 크기에서는 저사양 GPU의 커널 실행/전송
+    오버헤드가 이득을 상쇄하는 것으로 보임 — **공식 벤치마크는 반드시 EC2
+    T4에서**, 이 로컬 실측치는 참고용)
+  - 재현 시드: 데이터 train/val 분할과 에폭별 셔플 모두 `manual_seed(42)`
+- **산출물** (`model/checkpoints/hdfs/`, 존재함):
   - `deeplog_best.pt` — FastAPI/BentoML이 로드
-  - `deeplog.ts` — TorchScript(trace 변환), Triton `pytorch_libtorch` 백엔드용
-  - `config.json` — 세 서빙 스택이 공유하는 하이퍼파라미터 (dataset, input_size,
-    hidden_size, num_layers, num_classes, window_size, num_candidates)
+  - `deeplog.ts` — TorchScript. **`torch.jit.trace`가 아니라 `torch.jit.script`
+    로 export**(§3.1 참고 — Triton 검증 중 trace 방식의 문제를 발견해 전환함)
+  - `config.json` — 세 서빙 스택이 공유하는 하이퍼파라미터
+
+### 3.1 trace → script 전환 이유 (2026-07-29, Triton 로컬 검증 중 발견)
+
+`torch.jit.trace`로 export한 LSTM 모델을 Triton(LibTorch C++ 런타임,
+`instance_group: KIND_GPU`)에 로드하면 **모델 로딩 자체는 성공하지만 추론
+시점에 500 에러**가 났다: `RuntimeError: Input and hidden tensors are not
+at the same device, found input tensor at cuda:0 and hidden tensor at cpu`.
+trace로 내보낸 `nn.LSTM`은 가중치가 LibTorch의 `.to(cuda)` 파라미터 순회에서
+제대로 인식되지 않아 GPU로 이동하지 않는 알려진 이슈. `torch.jit.script`는
+`nn.LSTM` 서브모듈 구조를 그대로 보존해 파라미터가 정상적으로 이동한다 —
+재학습 없이 기존 체크포인트에서 `torch.jit.script()`로 재추출해 해결,
+eager 모드와 출력이 `torch.allclose`로 완전히 일치함을 확인.
 
 ---
 
-## 4. 서빙 아키텍처 (코드 구현 완료, 배포·통합 테스트 미실행)
+## 4. 서빙 아키텍처 — **로컬(Windows, Docker Desktop) 검증 완료** (2026-07-29)
 
 세 프레임워크 모두 **동일한 요청/응답 스키마**를 노출 (공정 비교 목적):
 
@@ -145,68 +205,146 @@ POST /predict
   요청: { "log_keys": [int, ...] (길이 = window_size-1), "next_key": int? }
   응답: { "top_candidates": [int,...], "probabilities": [float,...],
           "is_anomaly": bool?, "latency_ms": float }
-GET  /health
+GET  /health   (BentoML만 POST — §4.2)
 ```
 
 | 항목 | FastAPI (port 8000) | BentoML (port 3000) | Triton (port 8001 서버 / 8002 래퍼) |
 |---|---|---|---|
 | 역할 | 베이스라인 — 순수 PyTorch, 프레임워크 오버헤드 없음 | 범용 ML 서빙 — 모델 스토어, 자동 스키마 문서화, 리소스/타임아웃 선언 | GPU 고성능 서빙 — C++ 런타임, dynamic batching |
-| 모델 로드 | `torch.load(deeplog_best.pt)`, lifespan에서 1회 | BentoML model store에서 `bentoml.pytorch.load_model()` | `deeplog.ts`(TorchScript)를 Triton 서버가 로드, 래퍼는 HTTP 클라이언트로 위임 |
-| 전처리(one-hot) | 서버 프로세스 내(PyTorch) | 서버 프로세스 내(PyTorch) | **래퍼**가 numpy로 수행 후 Triton에 전달 (Triton 네이티브 API와 포맷이 달라 래퍼 필요) |
+| 모델 로드 | `torch.load(deeplog_best.pt)`, lifespan에서 1회 | BentoML model store에서 `bentoml.pytorch.load_model()` | `deeplog.ts`(TorchScript, script 방식)를 Triton 서버가 로드, 래퍼는 HTTP 클라이언트로 위임 |
+| 전처리(one-hot) | 서버 프로세스 내(PyTorch) | 서버 프로세스 내(PyTorch) | **래퍼**가 numpy로 수행 후 Triton에 전달 |
 | 동시성 제어 | 없음(uvicorn 기본) | `traffic.timeout=10s` 선언 | `max_batch_size=64`, `dynamic_batching`(preferred batch 8/16/32/64, max_queue_delay=100us) |
-| 리소스 선언 | 없음 | `resources.memory=1Gi` | `instance_group: KIND_GPU, count=1` |
+| 리소스 선언 | 없음 | `resources.memory=1Gi` | `instance_group: KIND_GPU, count=1`, docker-compose `gpus: all` |
+
+**로컬 검증 결과**: 동일 입력(`log_keys=[2,28,2,28,18,18,18,15,15], next_key=15`)에
+세 프레임워크 모두 `top_candidates=[15,11,13,23,22,25,17,18,9]`, top-1 확률
+0.9999996으로 사실상 동일 출력(마지막 몇 자리 부동소수점 차이는 실행 백엔드
+차이로 정상). 이 과정에서 **실제 버그 5개를 발견·수정**했다:
+
+1. **`docker-compose.yml` BentoML 서비스에 체크포인트 볼륨 마운트 누락** —
+   FastAPI에는 `../model/checkpoints:/workspace/model/checkpoints:ro`가 있는데
+   BentoML에는 없어 컨테이너가 모델을 찾지 못함. 추가함.
+2. **BentoML `/predict` 요청 스키마가 FastAPI/Triton과 다름** — BentoML 1.3
+   신규 SDK는 단일 Pydantic 파라미터(`req: PredictRequest`)를 파라미터 이름으로
+   한 번 더 감싼 `{"req": {...}}`를 요구해, `benchmark.py`가 보내는 flat body와
+   불일치(그대로 뒀으면 BentoML 벤치마크 전량이 422로 실패했을 것). `predict`
+   시그니처를 `log_keys`/`next_key` 개별 파라미터로 바꿔 flat body로 통일.
+3. **BentoML `/health`는 GET 불가, POST 전용** — `@bentoml.api`가 구조적으로
+   POST만 지원(코드로 못 고침). `run_benchmark.sh`의 헬스체크와 CLAUDE.md
+   검증 절차에 문서화하는 것으로 처리.
+4. **Triton 포트 설정 미스매치** — `docker-compose.yml`이 포트 오버라이드 없이
+   기동해 8001이 실제로는 Triton 기본 gRPC 포트였음(HTTP는 기본 8000). 이
+   프로젝트 전체가 "8001=HTTP"로 문서화돼 있어(.env.example 등) 이름 체계를
+   유지한 채 `--http-port=8001 --grpc-port=8003 --metrics-port=8004`를
+   명시 지정.
+5. **Triton GPU 컨테이너 기동 실패 (로컬)** — `deploy.resources.reservations.
+   devices`(Swarm 지향 문법)가 Docker Desktop WSL2에서 `nvml error: not
+   supported: unknown`으로 실패. `gpus: all` 축약 문법으로 전환해 해결 —
+   네이티브 Linux Docker Engine(EC2)에서도 동일하게 지원되는 문법이라 EC2에도
+   그대로 적용됨.
+6. **TorchScript trace→script 전환** — §3.1 참고. 이건 버그라기보다 모델
+   export 방식 자체의 변경.
 
 **Triton 구조가 2단**이라는 점이 논문에서 특히 설명이 필요한 부분: 클라이언트 →
 래퍼(8002, FastAPI+tritonclient) → Triton 서버(8001, C++ 런타임) 순으로 홉이 하나
 더 있음. 벤치마크 시 이 홉의 오버헤드도 결과 해석에 포함해야 함.
 
+### 4.1 미해결 — FastAPI/BentoML 컨테이너가 GPU를 안 씀
+
+`serving/fastapi/Dockerfile`·`serving/bentoml/Dockerfile`은 `python:3.11-slim`
+베이스에 `pip install torch==2.4.1`만 실행 — CUDA index-url 지정이 없어 CPU
+전용 torch가 설치된다. EC2(T4 GPU)에서 실행해도 FastAPI/BentoML은 CPU
+추론, Triton만 GPU 추론이 되어 "프레임워크 선택의 영향"이 아니라 "CPU vs
+GPU"를 비교하게 되는 confound가 있음. 이번 기말 스코프에서 고칠지, 혹은
+"FastAPI/BentoML=CPU 베이스라인, Triton=GPU 고성능"이라는 의도된 비교
+축으로 그대로 서술할지 결정 필요 — 아직 미결정.
+
 ---
 
-## 5. 벤치마크 설계 (`experiments/benchmark.py`, 코드 완성·미실행)
+## 5. 벤치마크 설계 (`experiments/benchmark.py`, `experiments/run_benchmark.sh`)
 
 - **방식**: Closed-loop — `asyncio.Semaphore(concurrency)`로 항상 N개 요청을
-  in-flight 상태로 유지, 하나 끝나면 즉시 다음 요청 전송. (Open-loop 대비 최대
-  처리량 측정에 적합한 표준 기법.)
-- **Concurrency sweep**: 1 → 4 → 8 → 16 → 32 → 64 (기본값, CLI로 변경 가능)
+  in-flight 상태로 유지, 하나 끝나면 즉시 다음 요청 전송.
+- **부하 단계(concurrency sweep)**: 1 → 4 → 8 → 16 → 32 → 64 (저/중/고 3단계
+  로 논문에 서술할 때는 이 6개 값 중 대표 구간을 저/중/고에 매핑하거나,
+  `--concurrency` 인자를 3개 값으로 좁혀 실행 — 아직 어느 쪽으로 할지 미확정)
 - **단계별 측정 시간**: 30초 (기본값), 워밍업 5초(concurrency=1) 선행
+- **반복 측정**: **3사이클** (`CYCLES` 기본값, §스코프 결정 이력 참고).
+  `run_benchmark.sh`가 사이클마다 `shuf`로 프레임워크 실행 순서를
+  랜덤화하고, 결과를 `experiments/results/cycle{1,2,3}/`에 분리 저장 +
+  `run_manifest_*.txt`에 실제 사용된 순서를 기록.
+- **컨테이너 생명주기**: 프레임워크 1개씩 `docker compose up` → 헬스체크
+  대기(Triton은 서버 ready 확인 후 wrapper 기동) → 벤치마크 → `stop`+`rm`
+  → 다음 프레임워크. 세 프레임워크를 동시에 띄우지 않음(CLAUDE.md 규칙).
+- **자원 사용률 로깅**: `--container <docker container id>`(docker stats
+  기반 CPU%·메모리) + `--monitor-gpu`(nvidia-smi 기반 GPU 사용률·메모리)를
+  latency 측정과 동일한 `time.time()` 타임스탬프로 백그라운드 샘플링(기본
+  1초 간격). 결과 CSV 2종:
+  - `{framework}_{dataset}.csv` — concurrency별 지연시간/처리량 + 자원
+    사용률 평균/최댓값
+  - `{framework}_{dataset}_resources.csv` — 원본 시계열(타임스탬프,
+    concurrency, cpu_pct, mem_used_mb, gpu_util_pct, gpu_mem_used_mb)
 - **요청 payload**: 각 데이터셋 test.npy에서 2,000개 무작위 샘플링 (캐시 편향 방지)
-- **측정 지표**: `throughput_rps`, `p50_ms`, `p99_ms`, `mean_ms`, `min_ms`,
-  `max_ms`, `n_requests`, `n_errors`
-- **출력**: `experiments/results/{framework}_{dataset}.csv` (framework × dataset
-  조합마다 별도 파일 — 3 프레임워크 × 2 데이터셋 = 6개 CSV 예상)
 - Kafka 스트리밍 경로(`kafka/producer.py`, `kafka/consumer.py`)는 별도로 존재 —
-  실시간 스트리밍 시뮬레이션용이며, `benchmark.py`의 HTTP 직접 부하 테스트와는
-  다른 실험 축(처리량 vs. 실시간 파이프라인 지연)임.
+  실시간 스트리밍 시뮬레이션용, `benchmark.py`의 HTTP 직접 부하 테스트와는
+  다른 실험 축. 이번 기말 스코프에 포함 여부 미결정.
 
-### 5.1 측정 운영 규칙 (CLAUDE.md와 동기화, 방법론 챕터용)
+### 5.1 측정 운영 규칙 (CLAUDE.md와 동기화)
 
-이 항목들은 스크립트 로직이 아니라 **측정을 어떻게 운영하는가**에 대한 규칙이라
-`benchmark.py` 코드만 봐서는 드러나지 않음 — 방법론 서술 시 반드시 포함해야 함.
-
-- **세 프레임워크를 동시에 실행하지 않는다.** 컨테이너를 하나씩 기동 → 측정 →
-  종료하는 순차 방식. (동시 실행 시 CPU/GPU/네트워크 자원 경합으로 세 프레임워크
-  결과가 서로 오염될 수 있기 때문.)
-- **순서 효과(order effect) 통제**: 측정 사이클마다 프레임워크 실행 순서를
-  바꿔가며 반복 — 항상 같은 순서로 측정하면 캐시 예열·시스템 온도 등 시간에 따른
-  변화가 특정 프레임워크에만 유리/불리하게 작용할 수 있음.
-- **공식 측정은 EC2 g4dn.xlarge에서만** — 로컬(개발 랩탑)에서 돌린 벤치마크
-  결과는 `experiments/results/`에 저장하지 않음. 논문에 들어가는 모든 수치는
-  동일한 하드웨어(EC2)에서 나온 것이어야 비교 타당성이 성립.
-- **통계 검정: Mann-Whitney U** — 프레임워크 간 지연시간 분포 비교 시 사용
-  (지연시간은 정규분포를 가정하기 어려운 right-skewed 분포이므로 비모수 검정 채택).
-- **핫패스에 pandas 미사용** — Kafka→추론 서버→응답 경로(`kafka/*.py`,
-  `serving/*/app.py`, `service.py`, `experiments/benchmark.py`)는 실제로 pandas를
-  import하지 않음(2026-07-15 확인). pandas는 `data/preprocess.py`(전처리)와
-  `experiments/plot_results.py`(사후 분석)에서만 사용 — 측정값 자체에 프레임워크
-  오버헤드가 섞이지 않도록 하기 위함.
+- **세 프레임워크를 동시에 실행하지 않는다** — `run_benchmark.sh`가 코드로
+  강제(§5 컨테이너 생명주기).
+- **순서 효과 통제** — 사이클마다 `shuf`로 랜덤화, manifest에 기록.
+- **공식 측정은 EC2 g4dn.xlarge에서만** — 로컬(개발 랩탑) 벤치마크 결과는
+  `experiments/results/`에 저장하지 않음. 로컬 GPU(MX450)는 애초에 T4와
+  특성이 달라 비교 불가.
+- **통계 검정: Mann-Whitney U** — 아직 적용 코드 없음, 결과 CSV 확보 후
+  사후 분석 스크립트에서 적용 예정.
+- **핫패스에 pandas 미사용** — `kafka/*.py`, `serving/*/app.py`, `service.py`,
+  `experiments/benchmark.py` 확인됨(2026-07-30 재확인). pandas는
+  `data/preprocess.py`·`experiments/plot_results.py`에서만 사용.
 
 ---
 
-## 6. 아직 결정 안 된 것 / 다음 세션에서 확인할 것
+## 6. EC2 준비 상태 — **스크립트·AWS 리소스 완료, quota 승인 대기**
 
-- EC2 g4dn.xlarge 인스턴스 미기동 (온디맨드 $0.647/h, ap-northeast-2)
-- 모델 학습 하이퍼파라미터가 기본값 그대로 갈지, 튜닝할지 미정
-- Triton ONNX 변환 여부 — 현재 코드는 TorchScript만 사용(`config.pbtxt`의
-  `platform: pytorch_libtorch`), CLAUDE.md에는 "ONNX/TorchScript"로 병기되어
-  있어 실제로는 TorchScript만 쓰는지 확인 필요
-- 결과 시각화(`experiments/plot_results.py`) 아직 안 읽어봄 — 6단계 완료 후 확인
+### 6.1 자동화 스크립트 (`experiments/aws/`, 전부 로컬에서 문법·일부 실행 검증됨)
+
+| 스크립트 | 역할 |
+|---|---|
+| `setup_instance.sh` | user-data — NVIDIA 드라이버·CUDA·Docker+compose 플러그인·nvidia-container-toolkit·git·AWS CLI v2 설치 |
+| `launch_spot_instance.sh` | g4dn.xlarge 스팟 인스턴스 요청, `setup_instance.sh`를 user-data로 전달 |
+| `sync_to_s3.sh` | (로컬 실행) `data/processed/`·`model/checkpoints/` → S3 업로드 |
+| `bootstrap_ec2.sh` | (EC2에서 실행) git clone + S3 다운로드 + Triton 레포 생성 + Docker 이미지 빌드 + BentoML 모델 등록(컨테이너 안에서, 호스트에 torch/bentoml 불필요) |
+| `spot_backup_watcher.sh` | (EC2, 백그라운드) 스팟 인터럽션 통지 감지 시 즉시 백업 + 5분마다 정기 백업 → S3 (EBS 대신 S3를 택한 이유: 루트 볼륨이 `DeleteOnTermination=true`라 인스턴스 종료 시 함께 사라짐) |
+| `one_shot_launch.sh` | 위 전부를 순서대로 실행하는 오케스트레이터. **`run_benchmark.sh` 자체는 의도적으로 자동 실행하지 않음** — 마지막 확인은 사람이 하도록 |
+| `update_sg_ip.sh` | 보안그룹 인바운드를 실행 시점의 현재 공인 IP로 갱신(재택/이동 시 반복 실행용). 로컬 상태 저장 없이 SG 자체를 진실의 원천으로 삼아 revoke/authorize — 정상 케이스·IP 변경 케이스 둘 다 로컬에서 실행 검증됨(2026-07-30) |
+
+### 6.2 이미 생성된 AWS 리소스 (ap-northeast-2)
+
+| 리소스 | ID/이름 |
+|---|---|
+| 서브넷 | `subnet-0f9c2552a0f61660c` (ap-northeast-2a, 기본 VPC — g4dn.xlarge 제공 AZ로 확인 후 선택) |
+| 보안그룹 | `sg-063774d1ab4874831` (`deeplog-serving-sg`) — 22/8000/3000/8001/8002/9092, 인바운드는 실행 시점 공인 IP로 제한(`update_sg_ip.sh`로 갱신) |
+| 키페어 | `deeplog-ec2-key`, `.pem`은 로컬 `~/.ssh/deeplog-ec2-key.pem`에 저장(본인 읽기 전용) |
+| S3 버킷 | ⬜ 미생성 — `sync_to_s3.sh`/`bootstrap_ec2.sh` 실행 전에 생성 필요 |
+
+### 6.3 남은 것
+
+- **g4dn.xlarge 스팟 quota 증가 요청 — 승인 대기 중** (2026-07-30 시점, 승인까지
+  수시간~하루 예상). 이게 전체 파이프라인의 마지막 병목.
+- S3 버킷 생성.
+- quota 승인되면: `sync_to_s3.sh` → `one_shot_launch.sh` (환경변수는 위 6.2
+  값 그대로 사용) → EC2에서 `run_benchmark.sh hdfs` 직접 실행.
+
+---
+
+## 7. 다음 세션에서 확인할 것
+
+- S3 버킷 생성 여부, quota 승인 여부.
+- §4.1 FastAPI/BentoML CPU-only torch confound를 이번 기말 스코프에서 고칠지
+  결정.
+- §5 concurrency sweep(6개 값)을 "저/중/고 3단계"로 어떻게 매핑해 서술할지
+  결정(스코프에는 "3단계 유지"라고만 돼 있고 구체적 값 매핑은 미정).
+- Kafka 스트리밍 경로를 이번 기말 결과물에 포함할지.
+- Mann-Whitney U 검정을 적용할 사후 분석 스크립트(`experiments/plot_results.py`
+  확장 또는 별도 스크립트) — 아직 없음.
