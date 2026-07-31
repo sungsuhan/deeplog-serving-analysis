@@ -2,8 +2,9 @@
 
 > 이 문서는 **코드 없이 논문을 쓰는 사람(채팅 Claude/ChatGPT 등)을 위한 스냅샷**입니다.
 > 소스는 항상 코드이고, 이 문서는 특정 시점의 재생성 가능한 요약본입니다.
-> **마지막 갱신: 2026-07-30, HDFS 학습 완료 + 세 프레임워크 로컬 검증 완료 +
-> EC2 준비(코드/스크립트) 완료 시점.**
+> **마지막 갱신: 2026-07-31, GPU confound 제거(FastAPI/BentoML도 GPU 사용) +
+> concurrency 대표값(저/중/고) 확정 + Kafka 스코프 정리 + 통계 검정 스크립트
+> 작성 + S3 버킷 생성 완료 시점.**
 > 코드가 바뀌면 이 문서도 다시 생성해야 합니다 — 특히 하이퍼파라미터·설정값은
 > 아래 표만 믿지 말고 실제 config 파일과 대조하세요.
 
@@ -52,6 +53,23 @@ quota 승인 후에나 나온다.**
 
 현재 스코프 규칙은 CLAUDE.md "현재 스코프 — 2026-08-11 기말 발표" 섹션에
 있음 — 이 문서(EXPERIMENT.md)는 "왜"를, CLAUDE.md는 "지금 무엇을"을 기록한다.
+
+### 2026-07-31 — GPU confound 제거, concurrency 대표값 확정, Kafka 스코프 정리
+
+7-30 시점에 §4.1(FastAPI/BentoML GPU 미사용)·§5 concurrency 매핑·Kafka
+포함 여부 세 가지를 미결정으로 남겨뒀는데, 이 세션에서 전부 결정하고
+(GPU는 코드까지) 반영했다.
+
+- **GPU confound**: FastAPI/BentoML도 Triton과 동일하게 GPU를 쓰도록
+  고친다 — "CPU 베이스라인"으로 의도적으로 남기는 대안은 기각(연구 질문이
+  프레임워크 비교이지 CPU/GPU 비교가 아니므로). 코드 수정·로컬 검증 완료
+  (§4.1).
+- **concurrency 대표값**: 저=4 / 중=16 / 고=64로 확정. 전체 sweep(6개 값)은
+  그대로 측정하고, 압축은 시각화(`plot_results.py`)·통계
+  (`stat_test.py`) 단계에서만 한다(§5).
+- **Kafka 역할**: 삭제하지 않고 아키텍처로 유지하되, 성능 비교의 측정
+  경로에서는 제외 — Kafka 기반 end-to-end 지연 측정은 후속 연구로 미룬다
+  (§4.2).
 
 ---
 
@@ -205,7 +223,7 @@ POST /predict
   요청: { "log_keys": [int, ...] (길이 = window_size-1), "next_key": int? }
   응답: { "top_candidates": [int,...], "probabilities": [float,...],
           "is_anomaly": bool?, "latency_ms": float }
-GET  /health   (BentoML만 POST — §4.2)
+GET  /health   (BentoML만 POST — 아래 버그 3번 참고)
 ```
 
 | 항목 | FastAPI (port 8000) | BentoML (port 3000) | Triton (port 8001 서버 / 8002 래퍼) |
@@ -249,15 +267,76 @@ GET  /health   (BentoML만 POST — §4.2)
 래퍼(8002, FastAPI+tritonclient) → Triton 서버(8001, C++ 런타임) 순으로 홉이 하나
 더 있음. 벤치마크 시 이 홉의 오버헤드도 결과 해석에 포함해야 함.
 
-### 4.1 미해결 — FastAPI/BentoML 컨테이너가 GPU를 안 씀
+### 4.1 해결됨 (2026-07-31) — FastAPI/BentoML도 Triton과 동일하게 GPU 사용
 
-`serving/fastapi/Dockerfile`·`serving/bentoml/Dockerfile`은 `python:3.11-slim`
-베이스에 `pip install torch==2.4.1`만 실행 — CUDA index-url 지정이 없어 CPU
-전용 torch가 설치된다. EC2(T4 GPU)에서 실행해도 FastAPI/BentoML은 CPU
-추론, Triton만 GPU 추론이 되어 "프레임워크 선택의 영향"이 아니라 "CPU vs
-GPU"를 비교하게 되는 confound가 있음. 이번 기말 스코프에서 고칠지, 혹은
-"FastAPI/BentoML=CPU 베이스라인, Triton=GPU 고성능"이라는 의도된 비교
-축으로 그대로 서술할지 결정 필요 — 아직 미결정.
+기존에는 `serving/fastapi/requirements.txt`·`serving/bentoml/requirements.txt`가
+`torch==2.4.1`만 지정(CUDA index-url 없음)해 CPU 전용 torch가 설치됐다.
+EC2(T4 GPU)에서 실행해도 FastAPI/BentoML은 CPU 추론, Triton만 GPU 추론이 되어
+"프레임워크 선택의 영향"이 아니라 "CPU vs GPU"를 비교하게 되는 confound가
+있었음.
+
+**결정**: 고친다. "FastAPI/BentoML=CPU 베이스라인"으로 의도적으로 남기는
+대안도 검토했으나, 연구 질문이 "프레임워크 선택의 영향"이지 "CPU vs GPU"가
+아니므로 confound를 제거하는 쪽을 택함.
+
+**수정 내용**:
+- `serving/fastapi/requirements.txt`·`serving/bentoml/requirements.txt`에
+  `--extra-index-url https://download.pytorch.org/whl/cu121` +
+  `torch==2.4.1+cu121` 지정. 버전에 로컬 세그먼트(`+cu121`)까지 명시해야
+  하는 이유: `--extra-index-url`만 쓰고 `torch==2.4.1`로 두면 PyPI 기본
+  인덱스의 CPU 휠과 이 인덱스의 GPU 휠이 둘 다 그 버전 문자열을 만족해
+  어느 쪽이 설치될지 모호해짐.
+- `docker-compose.yml`의 `fastapi`·`bentoml` 서비스에 Triton과 동일하게
+  `gpus: all` 추가.
+- 로컬(MX450)에서 재빌드 후 컨테이너 안에서 직접
+  `torch.cuda.is_available()`을 실행해 FastAPI·BentoML 둘 다 `True`,
+  `device: NVIDIA GeForce MX450`을 확인함.
+
+### 4.2 Kafka 스트리밍 아키텍처의 역할과 위치 (2026-07-31 결정)
+
+**결정: Kafka는 삭제하지 않고 "구현된 실시간 스트리밍 아키텍처"로 유지한다.
+다만 프레임워크 성능 비교의 주 측정 도구로는 쓰지 않는다.**
+
+**이유**: 연구 주제("실시간 로그 이상탐지 워크로드")가 스트리밍 구조를
+전제하므로 Kafka는 시스템 아키텍처로 남아 있어야 한다. 하지만 프레임워크 간
+성능 비교는 부하를 정밀 통제할 수 있는 concurrency sweep
+(`experiments/benchmark.py`)으로 하는 게 방법론적으로 더 적합하다 — Kafka를
+거치면 프로듀서 전송 속도·컨슈머 처리 속도 등 추가 변수가 섞여 "프레임워크
+선택의 순수한 영향"을 분리해서 보기 어려워진다.
+
+**역할 분담**:
+- **Kafka(`kafka/producer.py`, `kafka/consumer.py`) = 구현된 실시간 스트리밍
+  아키텍처** — 발표·논문의 시스템 다이어그램에 포함(아래 텍스트 설명 참고).
+  코드는 그대로 유지, 삭제하지 않음.
+- **프레임워크 성능 비교 = `experiments/benchmark.py`의 concurrency sweep만
+  사용.** `run_benchmark.sh`가 기동하는 컨테이너(fastapi/bentoml/triton
+  (-wrapper))에 kafka 서비스가 끼어들지 않음을 코드로 확인함(2026-07-31 —
+  `run_benchmark.sh`·`benchmark.py` 둘 다 "kafka" 문자열 검색 결과 0건).
+- **Kafka 기반 end-to-end 지연 측정은 후속 연구로 남긴다** —
+  `kafka/consumer.py`가 이미 요청별 `latency_ms`를 CSV로 남기도록 구현은
+  돼 있지만, 이번 기말 결과물의 성능 비교 수치에는 포함하지 않는다.
+
+**시스템 아키텍처 (발표 다이어그램용 텍스트 설명)**:
+
+```
+[HDFS 로그 시퀀스] → [Kafka Producer] → [Kafka Topic] → [Kafka Consumer]
+        → [서빙 프레임워크 POST /predict: FastAPI | BentoML | Triton]
+        → [응답 (top_candidates, is_anomaly, latency_ms)]
+```
+
+- `kafka/producer.py`가 전처리된 로그 시퀀스를 스트리밍으로 Kafka 토픽에
+  흘려보내고, `kafka/consumer.py`가 이를 소비해 서빙 프레임워크의
+  `POST /predict`를 호출한 뒤 이상 판정 응답을 받는다 — 이 경로 전체가
+  "실시간 로그 이상탐지" 연구 주제를 아키텍처로 뒷받침한다.
+- **다만 이번 기말 결과물의 프레임워크 성능 비교 수치는 이 Kafka 경로를
+  거치지 않는다.** `experiments/benchmark.py`가 서빙 프레임워크의
+  `POST /predict`를 concurrency sweep으로 **직접** 호출해 지연시간·처리량을
+  측정한다 — 위 다이어그램에서 [서빙 프레임워크] 박스 이후만 측정 대상이고,
+  Kafka 구간(Producer→Topic→Consumer)은 측정에 포함되지 않는다.
+- 발표 자료 작성 시 주의: Kafka는 "이 시스템이 실시간 스트리밍 워크로드에서
+  동작한다"는 아키텍처적 증거로 포함하되, "프레임워크 A가 B보다 빠르다"는
+  수치적 주장은 Kafka를 거치지 않은 concurrency sweep 결과로만 뒷받침해야
+  한다 — 이 둘을 같은 그래프·같은 수치로 섞지 않는 것이 방법론적으로 중요함.
 
 ---
 
@@ -265,9 +344,12 @@ GPU"를 비교하게 되는 confound가 있음. 이번 기말 스코프에서 �
 
 - **방식**: Closed-loop — `asyncio.Semaphore(concurrency)`로 항상 N개 요청을
   in-flight 상태로 유지, 하나 끝나면 즉시 다음 요청 전송.
-- **부하 단계(concurrency sweep)**: 1 → 4 → 8 → 16 → 32 → 64 (저/중/고 3단계
-  로 논문에 서술할 때는 이 6개 값 중 대표 구간을 저/중/고에 매핑하거나,
-  `--concurrency` 인자를 3개 값으로 좁혀 실행 — 아직 어느 쪽으로 할지 미확정)
+- **부하 단계(concurrency sweep)**: 1 → 4 → 8 → 16 → 32 → 64 전체를 측정하고,
+  **저=4 / 중=16 / 고=64를 논문·발표용 대표값으로 매핑**(2026-07-31 결정).
+  `experiments/benchmark.py`의 `--concurrency`는 6개 값 그대로 실행한다(전체
+  sweep이 있어야 fig1~3 곡선이 나옴) — 압축은 시각화·통계 단계에서만 한다:
+  `plot_results.py`의 `LOAD_LEVELS` 상수와 `stat_test.py`의 `--concurrency`
+  기본값(4 16 64)이 이 매핑과 동기화돼 있음.
 - **단계별 측정 시간**: 30초 (기본값), 워밍업 5초(concurrency=1) 선행
 - **반복 측정**: **3사이클** (`CYCLES` 기본값, §스코프 결정 이력 참고).
   `run_benchmark.sh`가 사이클마다 `shuf`로 프레임워크 실행 순서를
@@ -285,9 +367,16 @@ GPU"를 비교하게 되는 confound가 있음. 이번 기말 스코프에서 �
   - `{framework}_{dataset}_resources.csv` — 원본 시계열(타임스탬프,
     concurrency, cpu_pct, mem_used_mb, gpu_util_pct, gpu_mem_used_mb)
 - **요청 payload**: 각 데이터셋 test.npy에서 2,000개 무작위 샘플링 (캐시 편향 방지)
-- Kafka 스트리밍 경로(`kafka/producer.py`, `kafka/consumer.py`)는 별도로 존재 —
-  실시간 스트리밍 시뮬레이션용, `benchmark.py`의 HTTP 직접 부하 테스트와는
-  다른 실험 축. 이번 기말 스코프에 포함 여부 미결정.
+- **결과 분석 도구** (`experiments/`, 2026-07-31 갱신):
+  - `plot_results.py` — `results/cycle{1,2,3}/`를 전부 읽어 사이클 평균±표준편차로
+    fig1(p50)~fig3(throughput) sweep 곡선을 그리고, fig4는 저/중/고 3단계
+    대표값만 데이터셋별로 압축해 비교차트로 그린다. 한글 라벨(저/중/고)이
+    기본 폰트(DejaVu Sans)에 없어 깨지는 문제가 있어 Malgun Gothic 등
+    한글 폰트를 자동 탐지해 적용하도록 처리함.
+  - `stat_test.py` (신규) — Mann-Whitney U 검정. 아래 §5.1 참고.
+  - 둘 다 합성 데이터로 로딩→집계→출력 전 과정 스모크 테스트 완료.
+- Kafka 스트리밍 경로(`kafka/producer.py`, `kafka/consumer.py`)는 구현된
+  아키텍처로 유지하되 본 성능 비교엔 쓰지 않음 — §4.2 참고.
 
 ### 5.1 측정 운영 규칙 (CLAUDE.md와 동기화)
 
@@ -297,8 +386,12 @@ GPU"를 비교하게 되는 confound가 있음. 이번 기말 스코프에서 �
 - **공식 측정은 EC2 g4dn.xlarge에서만** — 로컬(개발 랩탑) 벤치마크 결과는
   `experiments/results/`에 저장하지 않음. 로컬 GPU(MX450)는 애초에 T4와
   특성이 달라 비교 불가.
-- **통계 검정: Mann-Whitney U** — 아직 적용 코드 없음, 결과 CSV 확보 후
-  사후 분석 스크립트에서 적용 예정.
+- **통계 검정: Mann-Whitney U** — `experiments/stat_test.py`(2026-07-31 신규
+  작성)로 구현됨. 사이클(기본 3회)을 검정의 표본 단위로 삼는다 —
+  benchmark.py CSV엔 개별 요청의 원본 지연시간이 없고 concurrency 레벨별
+  요약 통계만 있기 때문. 사이클 수가 적으면(n=3) Mann-Whitney U(양측)가
+  도달 가능한 최소 p-value가 약 0.1로 제한되므로, 스크립트가 그 한계를
+  결과와 함께 출력해 오독을 방지한다.
 - **핫패스에 pandas 미사용** — `kafka/*.py`, `serving/*/app.py`, `service.py`,
   `experiments/benchmark.py` 확인됨(2026-07-30 재확인). pandas는
   `data/preprocess.py`·`experiments/plot_results.py`에서만 사용.
@@ -326,13 +419,12 @@ GPU"를 비교하게 되는 confound가 있음. 이번 기말 스코프에서 �
 | 서브넷 | `subnet-0f9c2552a0f61660c` (ap-northeast-2a, 기본 VPC — g4dn.xlarge 제공 AZ로 확인 후 선택) |
 | 보안그룹 | `sg-063774d1ab4874831` (`deeplog-serving-sg`) — 22/8000/3000/8001/8002/9092, 인바운드는 실행 시점 공인 IP로 제한(`update_sg_ip.sh`로 갱신) |
 | 키페어 | `deeplog-ec2-key`, `.pem`은 로컬 `~/.ssh/deeplog-ec2-key.pem`에 저장(본인 읽기 전용) |
-| S3 버킷 | ⬜ 미생성 — `sync_to_s3.sh`/`bootstrap_ec2.sh` 실행 전에 생성 필요 |
+| S3 버킷 | `deeplog-serving-2025720449` (ap-northeast-2, 2026-07-31 생성) |
 
 ### 6.3 남은 것
 
-- **g4dn.xlarge 스팟 quota 증가 요청 — 승인 대기 중** (2026-07-30 시점, 승인까지
+- **g4dn.xlarge 스팟 quota 증가 요청 — 승인 대기 중** (2026-07-30 요청, 승인까지
   수시간~하루 예상). 이게 전체 파이프라인의 마지막 병목.
-- S3 버킷 생성.
 - quota 승인되면: `sync_to_s3.sh` → `one_shot_launch.sh` (환경변수는 위 6.2
   값 그대로 사용) → EC2에서 `run_benchmark.sh hdfs` 직접 실행.
 
@@ -340,11 +432,8 @@ GPU"를 비교하게 되는 confound가 있음. 이번 기말 스코프에서 �
 
 ## 7. 다음 세션에서 확인할 것
 
-- S3 버킷 생성 여부, quota 승인 여부.
-- §4.1 FastAPI/BentoML CPU-only torch confound를 이번 기말 스코프에서 고칠지
-  결정.
-- §5 concurrency sweep(6개 값)을 "저/중/고 3단계"로 어떻게 매핑해 서술할지
-  결정(스코프에는 "3단계 유지"라고만 돼 있고 구체적 값 매핑은 미정).
-- Kafka 스트리밍 경로를 이번 기말 결과물에 포함할지.
-- Mann-Whitney U 검정을 적용할 사후 분석 스크립트(`experiments/plot_results.py`
-  확장 또는 별도 스크립트) — 아직 없음.
+- **g4dn.xlarge 스팟 quota 승인 여부** — 유일하게 남은 외부 의존성. 승인되면
+  `one_shot_launch.sh` 실행.
+- quota 승인 후 EC2에서 벤치마크를 실제로 돌리기 전에, FastAPI/BentoML
+  이미지가 GPU torch(cu121)로 다시 빌드되는지 확인(로컬에서는 검증했지만
+  EC2 쪽 `bootstrap_ec2.sh` 빌드 경로로도 한 번 더 확인 권장).

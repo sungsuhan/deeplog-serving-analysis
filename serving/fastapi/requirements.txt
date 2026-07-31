@@ -1,4 +1,12 @@
+# CUDA 12.1 빌드 torch를 쓰기 위한 별도 인덱스. --extra-index-url만 쓰고 버전을
+# torch==2.4.1로만 적으면 PyPI 기본 인덱스의 CPU-only 휠과 어느 쪽이 설치될지
+# 모호해질 수 있어(둘 다 "2.4.1"을 만족), 로컬 버전(+cu121)까지 명시해 이 인덱스의
+# 휠로만 정확히 고정한다. Triton과 동일하게 GPU 추론이 되게 하려는 목적
+# (docker-compose.yml의 fastapi 서비스에 `gpus: all` 추가와 세트) — CLAUDE.md
+# §4.1 "FastAPI/BentoML CPU-only 문제" 참고.
+--extra-index-url https://download.pytorch.org/whl/cu121
+
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
-torch==2.4.1
+torch==2.4.1+cu121

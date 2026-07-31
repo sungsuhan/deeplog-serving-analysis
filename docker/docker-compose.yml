@@ -37,6 +37,10 @@ services:
     environment:
       - DATASET=hdfs
       - CKPT_DIR=/workspace/model/checkpoints/hdfs
+    # Triton과 동일하게 GPU로 추론하도록 (requirements.txt의 CUDA torch와 세트).
+    # 이거 없이 CUDA torch만 설치하면 컨테이너 안에서 GPU가 안 보여
+    # torch.cuda.is_available()이 여전히 False가 된다.
+    gpus: all
 
   bentoml:
     build:
@@ -50,6 +54,7 @@ services:
     environment:
       - BENTOML_MODEL_NAME=deeplog
       - BENTOML_MODEL_TAG=latest
+    gpus: all
 
   triton:
     image: nvcr.io/nvidia/tritonserver:24.08-py3
