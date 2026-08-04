@@ -28,7 +28,7 @@ log "apt update & 기본 패키지 설치"
 apt-get update -y
 apt-get install -y --no-install-recommends \
   build-essential ca-certificates curl gnupg lsb-release software-properties-common \
-  "linux-headers-$(uname -r)"
+  python3-venv "linux-headers-$(uname -r)"
 
 # ── 1. NVIDIA GPU 드라이버 ──────────────────────────────────────────────────
 if ! command -v nvidia-smi &>/dev/null; then
@@ -115,7 +115,12 @@ log "  aws sts get-caller-identity   # IAM 자격 확인 (인스턴스 프로파
 log ""
 log "다음 단계: bootstrap_ec2.sh로 코드/데이터/체크포인트를 가져오세요."
 
-touch /tmp/setup_instance_done
+# /tmp가 아니라 /var/lib에 마커를 남긴다 — /tmp는 보통 tmpfs라 재부팅하면
+# 지워지는데, 드라이버 설치 시 바로 아래에서 재부팅을 트리거하므로 /tmp에
+# 남기면 재부팅 후 "완료 안 됨"으로 잘못 보인다(2026-08-04 실제로 겪은 버그 —
+# 스크립트는 520초 만에 정상 완료했는데 재부팅 후 마커가 사라져 one_shot_launch.sh가
+# 계속 대기하다 타임아웃났다).
+touch /var/lib/setup_instance_done
 
 if [[ "$DRIVER_FRESH_INSTALL" == "1" ]]; then
   log "새 NVIDIA 드라이버가 설치되어 커널 모듈 로드를 위해 1분 후 재부팅합니다."

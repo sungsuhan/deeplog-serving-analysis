@@ -53,6 +53,10 @@ fi
 
 # ── 3. 호스트 Python venv (벤치마크 클라이언트용) ─────────────────────────────
 if [[ ! -d .venv ]]; then
+  log "python3-venv 설치 확인"
+  # Ubuntu 22.04 기본 이미지엔 venv 모듈이 없어 python3 -m venv가
+  # "ensurepip is not available"로 실패한다(2026-08-04 실제로 겪음).
+  dpkg -l python3-venv &>/dev/null || sudo apt-get install -y python3-venv
   log "venv 생성 + experiments/requirements.txt 설치"
   python3 -m venv .venv
   ./.venv/bin/pip install --upgrade pip -q

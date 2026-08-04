@@ -81,7 +81,7 @@ ssh_run() { ssh "${SSH_OPTS[@]}" "ubuntu@$PUBLIC_IP" "$@"; }
 # ── 3/5. SSH 접속 + user-data(setup_instance.sh) 완료 대기 ────────────────────
 step "3/5  프로비저닝 대기 (드라이버 설치 시 재부팅 포함, 통상 5~10분)"
 waited=0
-until ssh_run "test -f /tmp/setup_instance_done" 2>/dev/null; do
+until ssh_run "test -f /var/lib/setup_instance_done" 2>/dev/null; do
   sleep 15
   waited=$((waited + 15))
   echo "  대기 중... ${waited}s"
