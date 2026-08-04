@@ -16,7 +16,9 @@
 #   AWS_REGION             기본값: ap-northeast-2 (.env.example과 동일)
 #   EC2_INSTANCE_TYPE       기본값: g4dn.xlarge
 #   EC2_AMI_ID              기본값: 비워두면 최신 Ubuntu 22.04 AMI 자동 조회
-#   EC2_SPOT_MAX_PRICE      기본값: 0.30 (USD/h) — 온디맨드 $0.647/h(EXPERIMENT.md) 대비 상한
+#   EC2_SPOT_MAX_PRICE      기본값: 0.45 (USD/h) — 온디맨드 $0.647/h(EXPERIMENT.md) 대비 상한.
+#                           0.30으로는 시장 최소 체결가($0.3034 실측, 2026-08-04)를
+#                           살짝 못 넘겨 "price-too-low"로 체결이 안 됐던 적이 있어 여유를 둠.
 #   EC2_VOLUME_SIZE_GB      기본값: 100
 #
 # 사용법:
@@ -29,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REGION="${AWS_REGION:-ap-northeast-2}"
 INSTANCE_TYPE="${EC2_INSTANCE_TYPE:-g4dn.xlarge}"
 AMI_ID="${EC2_AMI_ID:-}"
-SPOT_MAX_PRICE="${EC2_SPOT_MAX_PRICE:-0.30}"
+SPOT_MAX_PRICE="${EC2_SPOT_MAX_PRICE:-0.45}"
 VOLUME_SIZE_GB="${EC2_VOLUME_SIZE_GB:-100}"
 
 : "${EC2_SUBNET_ID:?EC2_SUBNET_ID 환경변수를 설정하세요 (예: subnet-0123abcd)}"

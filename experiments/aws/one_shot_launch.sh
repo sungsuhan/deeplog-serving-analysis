@@ -14,6 +14,9 @@
 # 선택 환경변수: AWS_REGION, EC2_INSTANCE_TYPE, EC2_SPOT_MAX_PRICE,
 #               EC2_VOLUME_SIZE_GB, GITHUB_REPO, GIT_REF, DATASETS
 #               (각 하위 스크립트의 기본값을 그대로 물려받음)
+#   EC2_LAUNCH_MODE     spot(기본값) | ondemand — spot은 저렴하지만 용량 부족
+#                       시 인스턴스가 회수될 수 있음(2026-08-04 실제로 겪음).
+#                       마감이 임박해 신뢰성이 더 중요하면 ondemand로.
 #
 # 사용법:
 #   aws configure                     # 자격증명 최초 1회
@@ -35,8 +38,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REGION="${AWS_REGION:-ap-northeast-2}"
 GITHUB_REPO="${GITHUB_REPO:-https://github.com/sungsuhan/deeplog-serving-analysis.git}"
 GIT_REF="${GIT_REF:-main}"
-SSH_READY_TIMEOUT_S="${SSH_READY_TIMEOUT_S:-600}"
+# 2026-08-04 실측: NVIDIA 드라이버+CUDA 툴킷 설치만 8분 내외 소요, 재부팅까지
+# 포함하면 10분(600s) 기본값으로는 부족했다 — 25분으로 여유를 둠.
+SSH_READY_TIMEOUT_S="${SSH_READY_TIMEOUT_S:-1500}"
 BOOTSTRAP_TIMEOUT_S="${BOOTSTRAP_TIMEOUT_S:-1800}"
+EC2_LAUNCH_MODE="${EC2_LAUNCH_MODE:-spot}"
 
 step() { echo ""; echo "════════ $* ════════"; }
 
@@ -48,12 +54,18 @@ aws sts get-caller-identity >/dev/null 2>&1 || { echo "[FAIL] aws configure로 �
 step "1/5  데이터·체크포인트 S3 업로드"
 DEEPLOG_S3_BUCKET="$DEEPLOG_S3_BUCKET" bash "$SCRIPT_DIR/sync_to_s3.sh"
 
-# ── 2/5. 스팟 인스턴스 기동 ────────────────────────────────────────────────────
-step "2/5  스팟 인스턴스 기동"
+# ── 2/5. 인스턴스 기동 (spot 또는 ondemand) ───────────────────────────────────
+if [[ "$EC2_LAUNCH_MODE" == "ondemand" ]]; then
+  step "2/5  온디맨드 인스턴스 기동"
+  LAUNCHER="launch_ondemand_instance.sh"
+else
+  step "2/5  스팟 인스턴스 기동"
+  LAUNCHER="launch_spot_instance.sh"
+fi
 LAUNCH_LOG="$(mktemp)"
 AWS_REGION="$REGION" EC2_SUBNET_ID="$EC2_SUBNET_ID" \
   EC2_SECURITY_GROUP_ID="$EC2_SECURITY_GROUP_ID" EC2_KEY_NAME="$EC2_KEY_NAME" \
-  bash "$SCRIPT_DIR/launch_spot_instance.sh" | tee "$LAUNCH_LOG"
+  bash "$SCRIPT_DIR/$LAUNCHER" | tee "$LAUNCH_LOG"
 
 PUBLIC_IP="$(grep -oE 'Public IP\s*:\s*[0-9.]+' "$LAUNCH_LOG" | grep -oE '[0-9.]+$' | tail -1)"
 INSTANCE_ID="$(grep -oE '인스턴스 ID\s*:\s*i-[a-z0-9]+' "$LAUNCH_LOG" | awk '{print $NF}' | tail -1)"
