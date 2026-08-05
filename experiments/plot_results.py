@@ -6,6 +6,8 @@ Generates figures saved to experiments/figures/:
   fig2_p99_latency.png        p99 latency vs concurrency
   fig3_throughput.png         throughput (RPS) vs concurrency
   fig4_summary_bar_{ds}.png   저(4)/중(16)/고(64) 3단계 대표값 비교 (데이터셋별 1장)
+  fig5_cpu_usage.png          CPU 사용률(%) vs concurrency (docker stats 기반, cpu_pct_mean)
+  fig6_gpu_usage.png          GPU 사용률(%) vs concurrency (nvidia-smi 기반, gpu_util_pct_mean)
 
 run_benchmark.sh는 사이클(순서 랜덤화 반복 측정)마다 결과를
 experiments/results/cycle{1,2,3}/{framework}_{dataset}.csv로 나누어 저장한다 —
@@ -145,45 +147,72 @@ def _save(fig: plt.Figure, path: Path) -> None:
   print(f"  saved -> {path}")
 
 
+# ── 공용: 지표 하나를 concurrency에 대해 그리는 함수 ───────────────────────────
+# latency(fig1~2)·throughput(fig3)·자원 사용률(fig5~6)이 전부 "concurrency별
+# 사이클 평균±표준편차를 프레임워크별 선으로, 데이터셋별로 나눠 그린다"는
+# 구조가 동일해 하나로 합쳤다.
+def _plot_metric_vs_concurrency(df: pd.DataFrame, figures_dir: Path,
+                                y_col: str, title: str, ylabel: str,
+                                filename: str) -> None:
+  fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharey=False)
+  fig.suptitle(title, fontweight="bold", y=1.01)
+
+  for ax, ds in zip(axes, DATASETS):
+    sub = df[df["dataset"] == ds]
+    _add_framework_lines(ax, sub, y_col)
+    ax.set_title(DATASET_LABELS[ds])
+    ax.set_xlabel("Concurrent Requests")
+    ax.set_ylabel(ylabel)
+    ax.set_xscale("log", base=2)
+    ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
+    ax.legend()
+
+  fig.tight_layout()
+  _save(fig, figures_dir / filename)
+
+
 # ── Figure 1 & 2: latency vs concurrency ─────────────────────────────────────
 def plot_latency(df: pd.DataFrame, figures_dir: Path, percentile: str) -> None:
   col   = f"p{percentile}_ms"
   label = f"P{percentile} Latency (ms)"
-
-  fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharey=False)
-  fig.suptitle(f"{label} vs Concurrency", fontweight="bold", y=1.01)
-
-  for ax, ds in zip(axes, DATASETS):
-    sub = df[df["dataset"] == ds]
-    _add_framework_lines(ax, sub, col)
-    ax.set_title(DATASET_LABELS[ds])
-    ax.set_xlabel("Concurrent Requests")
-    ax.set_ylabel(label)
-    ax.set_xscale("log", base=2)
-    ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
-    ax.legend()
-
-  fig.tight_layout()
-  _save(fig, figures_dir / f"fig{'1' if percentile == '50' else '2'}_p{percentile}_latency.png")
+  fname = f"fig{'1' if percentile == '50' else '2'}_p{percentile}_latency.png"
+  _plot_metric_vs_concurrency(
+    df, figures_dir, col, f"{label} vs Concurrency", label, fname
+  )
 
 
 # ── Figure 3: throughput vs concurrency ──────────────────────────────────────
 def plot_throughput(df: pd.DataFrame, figures_dir: Path) -> None:
-  fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharey=False)
-  fig.suptitle("Throughput (RPS) vs Concurrency", fontweight="bold", y=1.01)
+  _plot_metric_vs_concurrency(
+    df, figures_dir, "throughput_rps", "Throughput (RPS) vs Concurrency",
+    "Throughput (req/s)", "fig3_throughput.png",
+  )
 
-  for ax, ds in zip(axes, DATASETS):
-    sub = df[df["dataset"] == ds]
-    _add_framework_lines(ax, sub, "throughput_rps")
-    ax.set_title(DATASET_LABELS[ds])
-    ax.set_xlabel("Concurrent Requests")
-    ax.set_ylabel("Throughput (req/s)")
-    ax.set_xscale("log", base=2)
-    ax.xaxis.set_major_formatter(ticker.ScalarFormatter())
-    ax.legend()
 
-  fig.tight_layout()
-  _save(fig, figures_dir / "fig3_throughput.png")
+# ── Figure 5 & 6: CPU/GPU 사용률 vs concurrency ───────────────────────────────
+def plot_resource_usage(df: pd.DataFrame, figures_dir: Path) -> None:
+  """benchmark.py --container/--monitor-gpu가 기록한 cpu_pct_mean/
+  gpu_util_pct_mean(concurrency 구간별 docker stats·nvidia-smi 평균)을 그린다.
+  GPU 수정(2026-07-31, FastAPI/BentoML도 Triton과 동일하게 GPU 사용) 이후에는
+  세 프레임워크 전부 gpu_util_pct_mean이 채워진다 — 수정 전이었다면
+  FastAPI/BentoML 라인이 0 근처에 붙어 있는 것으로 confound가 바로 드러났을 것."""
+  if "cpu_pct_mean" in df.columns:
+    _plot_metric_vs_concurrency(
+      df, figures_dir, "cpu_pct_mean", "CPU 사용률 (%) vs Concurrency",
+      "CPU Usage (%)", "fig5_cpu_usage.png",
+    )
+  else:
+    print("[WARN] cpu_pct_mean 컬럼 없음 - fig5 건너뜀 "
+          "(benchmark.py를 --container 없이 돌렸을 가능성)")
+
+  if "gpu_util_pct_mean" in df.columns:
+    _plot_metric_vs_concurrency(
+      df, figures_dir, "gpu_util_pct_mean", "GPU 사용률 (%) vs Concurrency",
+      "GPU Usage (%)", "fig6_gpu_usage.png",
+    )
+  else:
+    print("[WARN] gpu_util_pct_mean 컬럼 없음 - fig6 건너뜀 "
+          "(benchmark.py를 --monitor-gpu 없이 돌렸을 가능성)")
 
 
 # ── Figure 4: 저/중/고 부하 대표값 비교 (데이터셋별 1장) ──────────────────────────
@@ -267,6 +296,7 @@ def main() -> None:
   plot_latency(df, args.figures_dir, "99")
   plot_throughput(df, args.figures_dir)
   plot_summary_bar(df, args.figures_dir)
+  plot_resource_usage(df, args.figures_dir)
 
   print(f"\n[Plot] all figures saved to {args.figures_dir}/")
 

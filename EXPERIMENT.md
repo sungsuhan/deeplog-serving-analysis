@@ -2,9 +2,9 @@
 
 > 이 문서는 **코드 없이 논문을 쓰는 사람(채팅 Claude/ChatGPT 등)을 위한 스냅샷**입니다.
 > 소스는 항상 코드이고, 이 문서는 특정 시점의 재생성 가능한 요약본입니다.
-> **마지막 갱신: 2026-07-31, GPU confound 제거(FastAPI/BentoML도 GPU 사용) +
-> concurrency 대표값(저/중/고) 확정 + Kafka 스코프 정리 + 통계 검정 스크립트
-> 작성 + S3 버킷 생성 완료 시점.**
+> **마지막 갱신: 2026-08-05, EC2 g4dn.xlarge(T4 GPU)에서 공식 벤치마크
+> 실행 완료 + 결과 시각화·통계 검정까지 끝난 시점. 이제 남은 건 코드/실험이
+> 아니라 논문·발표 자료 작성이다(§8, §7 참고).**
 > 코드가 바뀌면 이 문서도 다시 생성해야 합니다 — 특히 하이퍼파라미터·설정값은
 > 아래 표만 믿지 말고 실제 config 파일과 대조하세요.
 
@@ -19,13 +19,12 @@
 | 3. DeepLog 학습 | ✅ 완료(HDFS만) | §3 참조. BGL은 스코프 밖 |
 | 4. 모델 변환/패키징 (Triton TorchScript, BentoML) | ✅ 완료 | §3·§4 참조 |
 | 5. Docker 스택 통합·스모크 테스트 | ✅ 완료(로컬) | §4 참조 — 버그 5개 발견·수정 |
-| 6. EC2 인프라 준비 | ✅ 스크립트·AWS 리소스 완료, ⬜ **spot quota 승인 대기 중** | §6 참조 |
-| 7. 벤치마크 실행 | ⬜ 미실행 | quota 승인 후 EC2에서 실행 예정 |
-| 8. 결과 시각화 | ⬜ 미실행 | 7단계 완료 후 |
+| 6. EC2 인프라 준비 | ✅ 완료 (quota 승인됨, 인스턴스는 작업 종료 후 terminate함) | §6 참조 |
+| 7. 벤치마크 실행 | ✅ **완료** (EC2 g4dn.xlarge T4, 3사이클, HDFS) | §8 참조 |
+| 8. 결과 시각화·통계 검정 | ✅ 완료 (fig1~6, Mann-Whitney U) | §8 참조 |
 
-**즉 지금 이 시점에서 논문에 "확정"으로 쓸 수 있는 건 데이터셋 통계 + HDFS
-학습 결과(수렴 loss)뿐이고, 서빙 프레임워크 간 성능 비교 수치는 EC2 스팟
-quota 승인 후에나 나온다.**
+**즉 이제 논문에 쓸 수 있는 실측 수치·그래프·통계 검정 결과가 전부 있다.
+남은 건 이걸 방법론·결과·논의로 풀어쓰는 것과 발표 자료 제작뿐이다(§7).**
 
 ---
 
@@ -71,6 +70,67 @@ quota 승인 후에나 나온다.**
   경로에서는 제외 — Kafka 기반 end-to-end 지연 측정은 후속 연구로 미룬다
   (§4.2).
 
+### 2026-08-04 ~ 08-05 — EC2 실행, 실전에서만 드러난 버그 다수 수정, 공식 벤치마크 완료
+
+quota는 8/4에 승인됐지만 실제로 인스턴스를 띄워 벤치마크를 끝내기까지
+**세션 3회, 인스턴스 3대**가 걸렸다 — 전부 로컬 검증만으로는 드러나지
+않는, EC2라는 실제 환경에서만 나타난 문제였다. 기록해두는 이유: 다음에
+비슷한 인프라를 구성할 때 같은 실수를 반복하지 않기 위함.
+
+**겪은 문제와 수정 (시간순)**:
+1. **스팟 가격 상한이 시장가보다 낮음** — `EC2_SPOT_MAX_PRICE` 기본값을
+   0.30→0.45로.
+2. **스팟 용량 부족으로 인스턴스 회수** — 스팟의 고유 리스크. 재현성보다
+   신뢰성이 급해 **온디맨드 옵션**(`launch_ondemand_instance.sh` 신규,
+   `EC2_LAUNCH_MODE=spot|ondemand` 토글)을 추가.
+3. **온디맨드 `--user-data`가 실행되지 않음** — Windows Git Bash에서
+   `file://$SCRIPT_DIR/...` 경로를 AWS CLI가 못 읽는 문제 + `$(cat file)`로
+   바꾼 뒤에도 원인 불명 실행 안 됨 이슈가 있었으나, 최종적으로는 스크립트
+   내용 자체는 정상 전달되고 있었음(§아래 5번과 연결).
+4. **재부팅 후 완료 마커 소실** — `setup_instance.sh`가 완료 마커를
+   `/tmp/setup_instance_done`에 남겼는데, 드라이버 설치 후 바로 이어지는
+   재부팅으로 `/tmp`(tmpfs)가 지워져 실제로는 520초 만에 성공했는데도
+   `one_shot_launch.sh`가 "안 끝남"으로 오판해 타임아웃. **`/var/lib/`로
+   마커 위치 변경**, 대기 타임아웃도 600s→1500s로 연장.
+5. **회사 WiFi가 SSH(22번)와 해당 EC2 IP 자체를 차단** — AWS 쪽(보안그룹·
+   라우트 테이블·인스턴스 상태) 전부 정상이었는데도 접속 불가. 원인은
+   로컬 네트워크(회사망) 방화벽. 집 네트워크로 옮기니 즉시 해결 — 인프라
+   문제가 아니라 실행 위치 문제였음을 완전히 특정하는 데 시간이 걸렸다.
+6. **`python3-venv` 미설치** — Ubuntu 22.04 기본 이미지엔 venv 모듈이 없어
+   `python3 -m venv`가 "ensurepip is not available"로 실패.
+   `setup_instance.sh`(사전 설치) + `bootstrap_ec2.sh`(방어적 재설치)
+   양쪽에 추가.
+7. **EC2 인스턴스에 AWS 자격증명이 없음** — `bootstrap_ec2.sh`의
+   `aws s3 ls` 체크가 자격증명 없이 조용히 실패해 "S3에 없음" 분기를
+   타고, **데이터·체크포인트를 하나도 못 받은 채로 이미지 빌드까지
+   성공**해버려 한참 뒤 벤치마크 실행 시점에야 문제가 드러남(BentoML이
+   모델을 못 찾아 20분 넘게 응답 없이 행). `one_shot_launch.sh`가
+   로컬 `~/.aws/credentials`를 인스턴스로 자동 복사하도록 추가, 두
+   스크립트 모두 자격증명 없으면 조용히 넘어가지 않고 경고하도록 수정.
+8. **`wait_for_health`의 curl에 타임아웃이 없음** — BentoML 앱이
+   위 7번 문제로 크래시 상태였는데, `docker-proxy`는 포트를 열어둔
+   채라 curl이 TCP 연결은 되고 응답만 영원히 안 와 **20분 넘게 무한
+   대기**. `--max-time 5` 추가.
+9. **BentoML `/health`가 GET에서 무한 대기** — §4 버그 3번(POST 전용)의
+   실제 영향이 여기서 드러남: GET은 그냥 405가 아니라 응답 자체가 안
+   와서 위 8번과 겹쳐 문제를 키움. `wait_for_health`가 `label=="bentoml"`
+   이면 POST로 호출하도록 수정.
+10. **`pkill -f run_benchmark.sh`가 자기 자신을 죽임** — `-f`(전체 명령행
+    매칭)라 pkill을 실행 중인 SSH 셸 자신의 명령행에도 "run_benchmark.sh"
+    문자열이 들어 있어 셸이 죽고 SSH가 exit 255로 끊김. PID로 직접
+    kill하는 것으로 우회(스크립트에는 반영 안 함 — 1회성 디버깅 명령).
+11. **`spot_backup_watcher.sh`를 `/tmp/`에서 실행해 자기 위치 기준 경로
+    계산이 깨짐** — `${BASH_SOURCE[0]}` 기준으로 프로젝트 루트를 찾는데
+    `/tmp/spot_backup_watcher.sh`로 scp한 뒤 거기서 실행하면
+    `_PROJECT_ROOT`가 `/`가 되어 백업이 조용히 아무 일도 안 함. 이번엔
+    결과를 scp로 직접 받아 우회했음 — **스크립트 자체는 아직 미수정**,
+    다음에 또 `/tmp`에 scp해서 쓸 거면 고쳐야 함.
+
+**결과**: 위 수정을 전부 반영한 뒤 재시도해 **3사이클 전부(단, cycle1의
+triton 1건은 첫 이미지 pull 직후 콜드스타트로 헬스체크 실패 — 재시도
+없이 스킵되고 다음 프레임워크로 자동 진행되어 이후 사이클엔 영향 없음)
+정상 완료**. 결과는 §8 참고.
+
 ---
 
 ## 1. 연구 개요
@@ -87,8 +147,8 @@ quota 승인 후에나 나온다.**
   Triton(GPU 고성능 서빙, dynamic batching)
 - **이번 기말 스코프**: HDFS만 — 위 "스코프 결정 이력" 참고. 이하 §2의 BGL
   관련 내용은 전처리 코드가 존재한다는 기록일 뿐, 이번 라운드 결과물이 아님.
-- **실험 환경**: AWS EC2 g4dn.xlarge (T4 GPU 16GB) — §6 참조, spot quota
-  승인 대기 중.
+- **실험 환경**: AWS EC2 g4dn.xlarge (T4 GPU 16GB), 온디맨드로 실행(§6) —
+  벤치마크 완료, 결과는 §8.
 
 ---
 
@@ -398,42 +458,104 @@ EC2(T4 GPU)에서 실행해도 FastAPI/BentoML은 CPU 추론, Triton만 GPU 추�
 
 ---
 
-## 6. EC2 준비 상태 — **스크립트·AWS 리소스 완료, quota 승인 대기**
+## 6. EC2 인프라 — **사용 완료, 인스턴스는 terminate됨**
 
-### 6.1 자동화 스크립트 (`experiments/aws/`, 전부 로컬에서 문법·일부 실행 검증됨)
+### 6.1 자동화 스크립트 (`experiments/aws/`)
 
 | 스크립트 | 역할 |
 |---|---|
-| `setup_instance.sh` | user-data — NVIDIA 드라이버·CUDA·Docker+compose 플러그인·nvidia-container-toolkit·git·AWS CLI v2 설치 |
-| `launch_spot_instance.sh` | g4dn.xlarge 스팟 인스턴스 요청, `setup_instance.sh`를 user-data로 전달 |
+| `setup_instance.sh` | user-data — NVIDIA 드라이버·CUDA·Docker+compose 플러그인·nvidia-container-toolkit·git·AWS CLI v2·python3-venv 설치 |
+| `launch_spot_instance.sh` | g4dn.xlarge 스팟 인스턴스 요청 |
+| `launch_ondemand_instance.sh` (2026-08-04 신규) | 스팟 용량 부족/인터럽션 시 대안 — 즉시 기동, 요금 확정형 |
 | `sync_to_s3.sh` | (로컬 실행) `data/processed/`·`model/checkpoints/` → S3 업로드 |
-| `bootstrap_ec2.sh` | (EC2에서 실행) git clone + S3 다운로드 + Triton 레포 생성 + Docker 이미지 빌드 + BentoML 모델 등록(컨테이너 안에서, 호스트에 torch/bentoml 불필요) |
-| `spot_backup_watcher.sh` | (EC2, 백그라운드) 스팟 인터럽션 통지 감지 시 즉시 백업 + 5분마다 정기 백업 → S3 (EBS 대신 S3를 택한 이유: 루트 볼륨이 `DeleteOnTermination=true`라 인스턴스 종료 시 함께 사라짐) |
-| `one_shot_launch.sh` | 위 전부를 순서대로 실행하는 오케스트레이터. **`run_benchmark.sh` 자체는 의도적으로 자동 실행하지 않음** — 마지막 확인은 사람이 하도록 |
-| `update_sg_ip.sh` | 보안그룹 인바운드를 실행 시점의 현재 공인 IP로 갱신(재택/이동 시 반복 실행용). 로컬 상태 저장 없이 SG 자체를 진실의 원천으로 삼아 revoke/authorize — 정상 케이스·IP 변경 케이스 둘 다 로컬에서 실행 검증됨(2026-07-30) |
+| `bootstrap_ec2.sh` | (EC2에서 실행) git clone + S3 다운로드 + Triton 레포 생성 + Docker 이미지 빌드 + BentoML 모델 등록 |
+| `spot_backup_watcher.sh` | (EC2, 백그라운드) 인터럽션 감지 시 즉시 백업 + 5분마다 정기 백업 → S3. **알려진 버그**: `/tmp/`로 scp해서 실행하면 자기 위치 기준 경로 계산이 깨져 백업이 조용히 안 됨(§스코프 이력 08-05, 11번) — 다음에 쓰려면 먼저 고칠 것 |
+| `one_shot_launch.sh` | 스팟/온디맨드 전체 오케스트레이터(`EC2_LAUNCH_MODE=spot\|ondemand`). AWS 자격증명 자동 복사 단계 포함(2026-08-05 추가). `run_benchmark.sh`는 의도적으로 자동 실행 안 함 |
+| `update_sg_ip.sh` | 보안그룹 인바운드를 실행 시점의 현재 공인 IP로 갱신 |
 
-### 6.2 이미 생성된 AWS 리소스 (ap-northeast-2)
+### 6.2 사용한 AWS 리소스 (ap-northeast-2)
 
 | 리소스 | ID/이름 |
 |---|---|
-| 서브넷 | `subnet-0f9c2552a0f61660c` (ap-northeast-2a, 기본 VPC — g4dn.xlarge 제공 AZ로 확인 후 선택) |
-| 보안그룹 | `sg-063774d1ab4874831` (`deeplog-serving-sg`) — 22/8000/3000/8001/8002/9092, 인바운드는 실행 시점 공인 IP로 제한(`update_sg_ip.sh`로 갱신) |
-| 키페어 | `deeplog-ec2-key`, `.pem`은 로컬 `~/.ssh/deeplog-ec2-key.pem`에 저장(본인 읽기 전용) |
-| S3 버킷 | `deeplog-serving-2025720449` (ap-northeast-2, 2026-07-31 생성) |
+| 서브넷 | `subnet-0f9c2552a0f61660c` (ap-northeast-2a) |
+| 보안그룹 | `sg-063774d1ab4874831` (`deeplog-serving-sg`) — 22/8000/3000/8001/8002/9092, `update_sg_ip.sh`로 인바운드 IP 갱신 |
+| 키페어 | `deeplog-ec2-key` |
+| S3 버킷 | `deeplog-serving-2025720449` — 데이터/체크포인트 업로드용. 백업 워처 버그로 벤치마크 결과 자체는 여기 안 올라가 있음(§6.1) — 로컬 scp로 직접 회수함 |
+| 벤치마크 인스턴스 | `i-0ab588b123116424e` (온디맨드, g4dn.xlarge, T4) — 사용 후 **terminate 완료**, 더 이상 과금 없음 |
 
-### 6.3 남은 것
+### 6.3 재실행 방법 (BGL 등 후속 라운드용)
 
-- **g4dn.xlarge 스팟 quota 증가 요청 — 승인 대기 중** (2026-07-30 요청, 승인까지
-  수시간~하루 예상). 이게 전체 파이프라인의 마지막 병목.
-- quota 승인되면: `sync_to_s3.sh` → `one_shot_launch.sh` (환경변수는 위 6.2
-  값 그대로 사용) → EC2에서 `run_benchmark.sh hdfs` 직접 실행.
+```
+bash experiments/aws/update_sg_ip.sh   # 네트워크 바뀌었으면
+EC2_LAUNCH_MODE=ondemand bash experiments/aws/one_shot_launch.sh
+# 완료 후 SSH 접속해 bash experiments/run_benchmark.sh <dataset>
+```
+스팟이 다시 값이 괜찮으면 `EC2_LAUNCH_MODE=spot`(기본값)로 비용을 아낄 수
+있지만, 인터럽션 위험을 감수해야 한다(§스코프 이력 08-04~05 참고).
 
 ---
 
-## 7. 다음 세션에서 확인할 것
+## 8. 벤치마크 결과 (HDFS, EC2 g4dn.xlarge T4, 2026-08-05)
 
-- **g4dn.xlarge 스팟 quota 승인 여부** — 유일하게 남은 외부 의존성. 승인되면
-  `one_shot_launch.sh` 실행.
-- quota 승인 후 EC2에서 벤치마크를 실제로 돌리기 전에, FastAPI/BentoML
-  이미지가 GPU torch(cu121)로 다시 빌드되는지 확인(로컬에서는 검증했지만
-  EC2 쪽 `bootstrap_ec2.sh` 빌드 경로로도 한 번 더 확인 권장).
+**측정 조건**: 3사이클(순서 랜덤화), concurrency sweep 1/4/8/16/32/64,
+단계별 30초 + 워밍업 5초. 원본 CSV: `experiments/results/cycle{1,2,3}/`.
+그림: `experiments/figures/fig1~6`. 통계 검정: `experiments/results/stat_test_hdfs.csv`.
+
+**알려진 결측**: cycle1의 triton 6개 concurrency 전부 결측(콜드스타트
+헬스체크 실패 1건, §스코프 이력 참고) — triton 관련 수치는 n=2, 나머지는
+n=3. `stat_test.py`가 이 차이를 `n_a`/`n_b` 컬럼에 반영해 계산함.
+
+### 8.1 저/중/고 대표값 (사이클 평균, fig4 참고)
+
+| 부하 | 지표 | FastAPI | BentoML | Triton |
+|---|---|---|---|---|
+| 저 (c=4)  | p50 (ms)     | 5.3    | 8.8    | 3.2    |
+| 저 (c=4)  | throughput   | 651.6  | 424.2  | 305.9  |
+| 중 (c=16) | p50 (ms)     | 29.3   | 36.8   | 29.7   |
+| 중 (c=16) | throughput   | 413.9  | 383.9  | 351.8  |
+| 고 (c=64) | p50 (ms)     | 139.4  | 203.4  | 173.2  |
+| 고 (c=64) | p99 (ms)     | 1135.5 | 2377.1 | 1353.2 |
+| 고 (c=64) | throughput   | 303.5  | 161.7  | 244.4  |
+
+### 8.2 관찰된 패턴
+
+- **저·중 부하에서는 FastAPI가 처리량 1위** — 프레임워크 오버헤드가 없는
+  베이스라인이 가벼운 부하에서는 가장 유리했다.
+- **고부하(c=64)로 갈수록 BentoML이 급격히 무너진다** — p99가 2.3초까지
+  치솟고 처리량은 세 프레임워크 중 최하(161.7). 반면 **Triton은 고부하에서
+  BentoML을 확실히 앞지르며**(처리량 244.4 vs 161.7) "고성능 서빙"이라는
+  포지셔닝과 부합하는 패턴을 보인다.
+- **GPU 사용률**(fig6)은 세 프레임워크 모두 0이 아닌 값을 보인다 — §4.1
+  GPU confound 수정이 실제 T4 환경에서도 유효했음을 데이터로 확인.
+- **통계적 유의성**: 사이클 수(n=3, triton은 n=2)가 작아 Mann-Whitney U가
+  도달 가능한 최소 p-value가 0.1~0.2로, 27건 검정 전부
+  `significant_at_0.05=False`다. **이건 차이가 없다는 뜻이 아니라 이
+  표본 크기로는 전통적 유의수준에 수학적으로 도달할 수 없다는 뜻** —
+  논문에서는 p-value 대신 위 median 차이(모든 사이클에서 순위가 뒤집히지
+  않고 일관됨)를 effect size로 제시하는 것을 권장(`stat_test.py`가 실행
+  시 이 caveat을 콘솔에 출력함).
+
+### 8.3 사용 가능한 그림 목록
+
+| 파일 | 내용 |
+|---|---|
+| `fig1_p50_latency.png` / `fig2_p99_latency.png` | concurrency sweep(1~64) 전체, 사이클 평균±표준편차 |
+| `fig3_throughput.png` | 처리량 sweep |
+| `fig4_summary_bar_hdfs.png` | 저/중/고 3단계 요약 비교 (위 8.1 표의 그래프 버전) |
+| `fig5_cpu_usage.png` / `fig6_gpu_usage.png` | CPU/GPU 사용률(%) sweep (2026-08-05 신규) |
+
+---
+
+## 9. 다음 세션에서 확인할 것
+
+**코드/실험 관점에서는 이번 기말 스코프가 완료됐다.** 남은 건 논문·발표
+자료 작성(별도로 진행 중)과, 시간이 남으면 처리할 만한 부차적인 항목들:
+
+- `spot_backup_watcher.sh`의 `/tmp` 경로 버그(§6.1) — 이번엔 결과를 scp로
+  직접 회수해 우회했지만, 다음 라운드(BGL 등)에서 스팟 인터럽션 대비가
+  필요하면 먼저 고쳐야 함.
+- Triton cycle1 결측 1건 — 재실행해서 n=3으로 채울지, 이대로(n=2) 논문에
+  한계로 명시하고 갈지 결정 필요. 재실행 자체는 `EC2_LAUNCH_MODE=ondemand`로
+  인스턴스 한 번 더 띄우고 `run_benchmark.sh hdfs`만 다시 돌리면 됨(1
+  사이클만 필요하면 `CYCLES=1`로 좁혀서).
+- 오늘 세션에서 고친 버그들(§스코프 이력 08-04~05)의 커밋 여부 확인.
