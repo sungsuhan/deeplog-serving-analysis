@@ -63,7 +63,18 @@ container_id() {
 
 wait_for_health() {
   local url="$1" label="$2" waited=0
-  until curl -sf "$url/health" > /dev/null 2>&1; do
+  # --max-time 필수: 서버 프로세스가 크래시/행 상태여도 TCP 연결 자체는
+  # accept될 수 있어(docker-proxy가 포트를 열어둔 채로) curl이 응답을
+  # 무한정 기다리는 사고가 실제로 있었다(2026-08-05, bentoml 모델 미등록으로
+  # 앱이 죽어있는데 curl만 20분 넘게 걸려있었음) — 타임아웃 없으면 이 루프
+  # 자체가 절대 안 끝난다.
+  local curl_opts=(-sf --max-time 5)
+  # BentoML 1.3 신규 SDK의 /health는 GET을 거부하고 POST만 받는다
+  # (CLAUDE.md 검증 절차 참고) — GET으로 두면 이 프레임워크만 항상 타임아웃난다.
+  if [[ "$label" == "bentoml" ]]; then
+    curl_opts+=(-X POST -d '{}')
+  fi
+  until curl "${curl_opts[@]}" "$url/health" > /dev/null 2>&1; do
     sleep 2
     waited=$((waited + 2))
     if (( waited >= HEALTH_TIMEOUT_S )); then
@@ -76,7 +87,7 @@ wait_for_health() {
 
 wait_for_triton_ready() {
   local waited=0
-  until curl -sf "http://localhost:8001/v2/health/ready" > /dev/null 2>&1; do
+  until curl -sf --max-time 5 "http://localhost:8001/v2/health/ready" > /dev/null 2>&1; do
     sleep 2
     waited=$((waited + 2))
     if (( waited >= HEALTH_TIMEOUT_S )); then

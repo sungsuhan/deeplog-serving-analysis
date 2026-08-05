@@ -66,6 +66,12 @@ else
 fi
 
 # ── 4. 데이터·체크포인트를 S3에서 내려받기 ────────────────────────────────────
+# 자격증명이 없으면 아래 `aws s3 ls` 체크들이 전부 조용히 실패해 "S3에 없음"
+# 분기를 타고, 체크포인트 없이도 이미지 빌드까지는 성공해버려 훨씬 나중
+# (벤치마크 실행 시점)에야 문제가 드러난다(2026-08-05 실제로 겪음). 여기서
+# 미리 명확하게 경고한다.
+aws sts get-caller-identity >/dev/null 2>&1 || log "[WARN] AWS 자격증명이 없습니다 — 아래 S3 다운로드가 전부 조용히 건너뛰어집니다. aws configure를 먼저 실행하세요."
+
 for ds in $DATASETS; do
   if aws s3 ls "$S3_PREFIX/data/processed/$ds/" >/dev/null 2>&1; then
     log "data/processed/$ds 다운로드"

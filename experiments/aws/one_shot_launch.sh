@@ -105,6 +105,21 @@ until ssh_run "nvidia-smi >/dev/null 2>&1" 2>/dev/null; do
 done
 echo "[one-shot] nvidia-smi 확인 완료"
 
+# ── 3.5/5. AWS 자격증명 복사 ───────────────────────────────────────────────────
+# bootstrap_ec2.sh가 S3에서 데이터/체크포인트를 받으려면 인스턴스 자체에
+# AWS 자격증명이 있어야 한다 — 없으면 aws s3 ls가 조용히 실패해서
+# "S3에 없음 — 건너뜀" 분기를 타고, 체크포인트 없이 이미지 빌드까지는
+# 성공해버려 한참 뒤(벤치마크 실행 시점)에야 문제가 드러난다(2026-08-05
+# 실제로 겪음 — bentoml이 모델을 못 찾아 20분 넘게 행). 인스턴스 프로파일을
+# 아직 안 붙였으므로 로컬 자격증명을 그대로 복사하는 방식으로 처리.
+step "3.5/5  AWS 자격증명 복사"
+ssh_run "mkdir -p ~/.aws"
+scp "${SSH_OPTS[@]}" "$HOME/.aws/credentials" "$HOME/.aws/config" "ubuntu@$PUBLIC_IP:~/.aws/" 2>/dev/null \
+  || echo "[WARN] 로컬 ~/.aws/credentials|config를 못 찾았습니다 — bootstrap_ec2.sh의 S3 다운로드가 실패할 수 있습니다."
+ssh_run "aws sts get-caller-identity >/dev/null" \
+  && echo "[one-shot] 인스턴스에서 AWS 자격증명 확인됨" \
+  || echo "[FAIL] 인스턴스에서 AWS 자격증명 확인 실패 — S3 다운로드가 조용히 건너뛰어질 것입니다."
+
 # ── 4/5. bootstrap_ec2.sh 원격 실행 ───────────────────────────────────────────
 step "4/5  bootstrap_ec2.sh 원격 실행 (레포 clone + S3 다운로드 + 이미지 빌드 + 모델 등록)"
 scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/bootstrap_ec2.sh" "ubuntu@$PUBLIC_IP:/tmp/bootstrap_ec2.sh"
