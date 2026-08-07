@@ -2,9 +2,12 @@
 
 > 이 문서는 **코드 없이 논문을 쓰는 사람(채팅 Claude/ChatGPT 등)을 위한 스냅샷**입니다.
 > 소스는 항상 코드이고, 이 문서는 특정 시점의 재생성 가능한 요약본입니다.
-> **마지막 갱신: 2026-08-05, EC2 g4dn.xlarge(T4 GPU)에서 공식 벤치마크
-> 실행 완료 + 결과 시각화·통계 검정까지 끝난 시점. 이제 남은 건 코드/실험이
-> 아니라 논문·발표 자료 작성이다(§8, §7 참고).**
+> **마지막 갱신: 2026-08-06. 통계 검정 표본을 5사이클로 늘리는 과정에서
+> Triton 래퍼의 실제 버그(§4.3)를 발견·수정했고, 그 여파로 기존 cycle2·3의
+> Triton 데이터가 오염됐음을 확인해 폐기 후 재측정했다. 최종적으로
+> FastAPI/BentoML/Triton 모두 n=5 사이클의 클린한 데이터로 27건 중 25건이
+> p<0.05에 도달했다(§8). 이제 남은 건 코드/실험이 아니라 논문·발표 자료
+> 작성이다(§9).**
 > 코드가 바뀌면 이 문서도 다시 생성해야 합니다 — 특히 하이퍼파라미터·설정값은
 > 아래 표만 믿지 말고 실제 config 파일과 대조하세요.
 
@@ -19,12 +22,12 @@
 | 3. DeepLog 학습 | ✅ 완료(HDFS만) | §3 참조. BGL은 스코프 밖 |
 | 4. 모델 변환/패키징 (Triton TorchScript, BentoML) | ✅ 완료 | §3·§4 참조 |
 | 5. Docker 스택 통합·스모크 테스트 | ✅ 완료(로컬) | §4 참조 — 버그 5개 발견·수정 |
-| 6. EC2 인프라 준비 | ✅ 완료 (quota 승인됨, 인스턴스는 작업 종료 후 terminate함) | §6 참조 |
-| 7. 벤치마크 실행 | ✅ **완료** (EC2 g4dn.xlarge T4, 3사이클, HDFS) | §8 참조 |
-| 8. 결과 시각화·통계 검정 | ✅ 완료 (fig1~6, Mann-Whitney U) | §8 참조 |
+| 6. EC2 인프라 준비 | ✅ 완료 (quota 승인됨, 인스턴스 2대 모두 작업 종료 후 terminate함) | §6 참조 |
+| 7. 벤치마크 실행 | ✅ **완료** (EC2 g4dn.xlarge T4, HDFS, FastAPI/BentoML/Triton 모두 n=5) | §8 참조 |
+| 8. 결과 시각화·통계 검정 | ✅ 완료 (fig1~6, Mann-Whitney U, 27건 중 25건 p<0.05) | §8 참조 |
 
 **즉 이제 논문에 쓸 수 있는 실측 수치·그래프·통계 검정 결과가 전부 있다.
-남은 건 이걸 방법론·결과·논의로 풀어쓰는 것과 발표 자료 제작뿐이다(§7).**
+남은 건 이걸 방법론·결과·논의로 풀어쓰는 것과 발표 자료 제작뿐이다(§9).**
 
 ---
 
@@ -130,6 +133,57 @@ quota는 8/4에 승인됐지만 실제로 인스턴스를 띄워 벤치마크를
 triton 1건은 첫 이미지 pull 직후 콜드스타트로 헬스체크 실패 — 재시도
 없이 스킵되고 다음 프레임워크로 자동 진행되어 이후 사이클엔 영향 없음)
 정상 완료**. 결과는 §8 참고.
+
+### 2026-08-06 — 사이클 3→5 확장 중 Triton 래퍼 버그 발견, 기존 데이터 오염 확인, 재측정
+
+**배경**: 3사이클(n=3)로는 Mann-Whitney U가 도달 가능한 최소 p-value가
+0.1이라 27건 전부 `p<0.05` 도달이 구조적으로 불가능했다(§5.1). 표본을
+5사이클로 늘리기로 하고, 기존 3사이클 결과에 `run_benchmark.sh`를
+`CYCLE_START` 옵션(신규 추가)으로 cycle4·5만 이어붙이는 방식을 택함 —
+코드 변경 없음을 `git log`로 확인했으니 사이클을 이어붙여도 측정 조건은
+동일하다고 판단했다.
+
+**세 프레임워크 재검증 중 실제 버그 발견**: EC2를 재기동해 fastapi·bentoml·
+triton을 동시에 띄우고 CLAUDE.md 검증 절차(§4)를 다시 돌리는 과정에서
+`triton-wrapper`의 `/health`가 500을 냈다. 원인은
+`serving/triton/app.py`가 동기(gevent 기반) `tritonclient.http`를
+FastAPI의 sync 엔드포인트로 노출해, uvicorn/anyio가 요청을 스레드풀에
+분산 디스패치할 때 gevent greenlet이 자신을 생성한 스레드가 아닌 다른
+스레드에서 재개되면서 `greenlet.error: Cannot switch to a different
+thread`가 발생하는 것이었다.
+
+**기존 데이터 오염 확인**: 이 버그가 8/5 원본 3사이클 중 cycle2·3에도
+있었다는 걸 그 사이클의 `n_errors` 컬럼에서 재확인했다(concurrency=4·8에서만
+11~30건, 다른 구간은 0 — 스레드풀이 여러 스레드를 쓰는 저·중 동시성
+구간에서만 발현). 버그가 있는 상태에서 실패한 요청은 대기 없이 즉시
+에러 처리되어 **성공한 요청의 지연시간은 실제보다 낮게, 처리량은 실제보다
+낮게** 측정돼 있었다. 즉 cycle2·3의 triton 수치는 "다른 조건에서 측정한
+값"이 아니라 "고장난 상태에서 측정한 잘못된 값"이라 통계 분석에 그대로
+쓸 수 없었다.
+
+**결정**: cycle2·3의 triton CSV만 통계 분석에서 제외한다(fastapi·bentoml은
+이 버그와 무관해 그대로 유효). 파일은 삭제하지 않고
+`experiments/results/_archived_buggy_triton/`로 옮겨 보관(사유는 그
+디렉토리의 `README.md` 참고). `tritonclient.http.aio`(asyncio 기반
+비동기 클라이언트)로 교체해 버그를 수정하고, EC2를 한 번 더 재기동해
+**triton만 3사이클(cycle6·7·8) 재측정**해 triton도 fastapi·bentoml과
+동일하게 n=5(전부 수정판 코드로 측정)를 채웠다.
+
+**수정 검증**: 재빌드한 wrapper에 health 10회 연속 호출 + predict 40건
+동시 호출(20 병렬 × 2라운드)을 스트레스 테스트해 에러 0건 확인. 실제
+벤치마크에서도 concurrency=4 기준 처리량이 버그 있던 버전 대비 약 2배로
+늘었다(300 rps → 620 rps) — 스레드 직렬화가 사라지며 진짜 동시성을
+처리하게 된 효과.
+
+**최종 결과**: FastAPI·BentoML은 cycle1~5(n=5), Triton은 cycle4~8(전부
+수정판 코드, n=5)로 재분석. 27건의 Mann-Whitney U 검정 중 **25건이
+`p<0.05`**(§8 참고) — 남은 2건은 bentoml-triton 쌍(가장 근접한 두
+프레임워크)이라 통계적으로 자연스럽다.
+
+**교훈**: 통계적 검정력을 올리려고 사이클 수를 늘리는 작업이 오히려
+기존 코드의 잠재 버그(스레드 경쟁)를 실전에서 드러냈다. 로컬 검증에서는
+안 보였던 문제였음 — 동시성이 실제로 여러 스레드를 타야 재현되는
+버그라 단발성 predict 호출로는 절대 못 잡는다.
 
 ---
 
@@ -398,6 +452,32 @@ EC2(T4 GPU)에서 실행해도 FastAPI/BentoML은 CPU 추론, Triton만 GPU 추�
   수치적 주장은 Kafka를 거치지 않은 concurrency sweep 결과로만 뒷받침해야
   한다 — 이 둘을 같은 그래프·같은 수치로 섞지 않는 것이 방법론적으로 중요함.
 
+### 4.3 해결됨 (2026-08-06) — Triton 래퍼의 스레드 경쟁 버그 (gevent × threadpool)
+
+**증상**: `serving/triton/app.py`의 `/health`가 간헐적으로 500을 반환,
+로그에 `greenlet.error: Cannot switch to a different thread`.
+
+**원인**: `tritonclient.http`(동기, gevent/geventhttpclient 기반)를
+FastAPI의 `def`(동기) 엔드포인트에서 호출하고 있었다. FastAPI/Starlette는
+동기 엔드포인트를 anyio 스레드풀에 분산 디스패치하는데, gevent의
+greenlet은 자신이 생성된 OS 스레드에 고정되어 있어 **다른 스레드에서
+재개하려 하면 즉시 예외**를 던진다. `/predict`도 같은 클라이언트를
+쓰지만 매번 크래시하지는 않아 로컬 1회성 검증(§4)에서는 발견되지 않았고
+— concurrency가 낮을 때(4~8)만, 스레드풀이 실제로 여러 스레드를 오갈 때만
+간헐적으로 재현됐다(§스코프 이력 2026-08-06 참고, 8/5 원본 데이터의
+cycle2·3에도 이미 있었음).
+
+**수정**: `tritonclient.http.aio`(asyncio/aiohttp 기반 비동기 클라이언트)로
+교체. `lifespan`·`health()`·`_infer()`·`predict()`를 전부 `async def`로
+바꾸고 client 호출에 `await`를 붙였다 — `InferInput`/`InferRequestedOutput`은
+순수 데이터 구조라 동기 모듈(`tritonclient.http`) 것을 그대로 재사용
+가능(aio 클라이언트의 `infer()`가 동일 타입을 받음, 실측 확인됨). 요청/응답
+JSON 스키마는 변경 없음.
+
+**부수 효과**: 스레드 직렬화가 사라지며 동시성 처리 능력 자체가
+개선됐다 — concurrency=4 기준 처리량이 300 rps → 620 rps로 약 2배
+증가(§8). 이건 버그 수정의 부산물이지 별도 최적화가 아니다.
+
 ---
 
 ## 5. 벤치마크 설계 (`experiments/benchmark.py`, `experiments/run_benchmark.sh`)
@@ -411,10 +491,17 @@ EC2(T4 GPU)에서 실행해도 FastAPI/BentoML은 CPU 추론, Triton만 GPU 추�
   `plot_results.py`의 `LOAD_LEVELS` 상수와 `stat_test.py`의 `--concurrency`
   기본값(4 16 64)이 이 매핑과 동기화돼 있음.
 - **단계별 측정 시간**: 30초 (기본값), 워밍업 5초(concurrency=1) 선행
-- **반복 측정**: **3사이클** (`CYCLES` 기본값, §스코프 결정 이력 참고).
-  `run_benchmark.sh`가 사이클마다 `shuf`로 프레임워크 실행 순서를
-  랜덤화하고, 결과를 `experiments/results/cycle{1,2,3}/`에 분리 저장 +
-  `run_manifest_*.txt`에 실제 사용된 순서를 기록.
+- **반복 측정**: **5사이클** (통계 검정력 확보를 위해 3→5로 확장,
+  §스코프 결정 이력 2026-08-06 참고). `run_benchmark.sh`가 사이클마다
+  `shuf`로 프레임워크 실행 순서를 랜덤화하고, 결과를
+  `experiments/results/cycle{N}/`에 분리 저장 + `run_manifest_*.txt`에
+  실제 사용된 순서를 기록. `CYCLE_START` 환경변수(신규)로 기존 사이클을
+  덮어쓰지 않고 이어붙일 수 있음(`CYCLE_START=4 CYCLES=5 bash
+  run_benchmark.sh hdfs`처럼). **단, Triton은 cycle1~3에 래퍼 버그가
+  있어(§4.3) cycle4~8 중 5개(4,5,6,7,8)가 최종 유효 표본** — fastapi·
+  bentoml은 cycle1~5 그대로 유효. `experiments/results/
+  _archived_buggy_triton/`에 폐기된 triton cycle2·3 데이터를 사유와 함께
+  보관해둠.
 - **컨테이너 생명주기**: 프레임워크 1개씩 `docker compose up` → 헬스체크
   대기(Triton은 서버 ready 확인 후 wrapper 기동) → 벤치마크 → `stop`+`rm`
   → 다음 프레임워크. 세 프레임워크를 동시에 띄우지 않음(CLAUDE.md 규칙).
@@ -447,18 +534,20 @@ EC2(T4 GPU)에서 실행해도 FastAPI/BentoML은 CPU 추론, Triton만 GPU 추�
   `experiments/results/`에 저장하지 않음. 로컬 GPU(MX450)는 애초에 T4와
   특성이 달라 비교 불가.
 - **통계 검정: Mann-Whitney U** — `experiments/stat_test.py`(2026-07-31 신규
-  작성)로 구현됨. 사이클(기본 3회)을 검정의 표본 단위로 삼는다 —
+  작성)로 구현됨. 사이클(기본 5회)을 검정의 표본 단위로 삼는다 —
   benchmark.py CSV엔 개별 요청의 원본 지연시간이 없고 concurrency 레벨별
-  요약 통계만 있기 때문. 사이클 수가 적으면(n=3) Mann-Whitney U(양측)가
-  도달 가능한 최소 p-value가 약 0.1로 제한되므로, 스크립트가 그 한계를
-  결과와 함께 출력해 오독을 방지한다.
+  요약 통계만 있기 때문. n=3이던 원래 3사이클로는 Mann-Whitney U(양측)가
+  도달 가능한 최소 p-value가 약 0.1로 제한돼 27건 전부 유의하지 않게
+  나왔는데, n=5로 늘린 뒤(§스코프 이력 2026-08-06)에는 최소 p-value가
+  약 0.008까지 낮아져 **27건 중 25건이 `p<0.05`**에 도달했다(§8). 스크립트가
+  이 구조적 한계를 결과와 함께 출력해 오독을 방지한다.
 - **핫패스에 pandas 미사용** — `kafka/*.py`, `serving/*/app.py`, `service.py`,
   `experiments/benchmark.py` 확인됨(2026-07-30 재확인). pandas는
   `data/preprocess.py`·`experiments/plot_results.py`에서만 사용.
 
 ---
 
-## 6. EC2 인프라 — **사용 완료, 인스턴스는 terminate됨**
+## 6. EC2 인프라 — **사용 완료, 인스턴스 3대 모두 terminate됨**
 
 ### 6.1 자동화 스크립트 (`experiments/aws/`)
 
@@ -481,7 +570,9 @@ EC2(T4 GPU)에서 실행해도 FastAPI/BentoML은 CPU 추론, Triton만 GPU 추�
 | 보안그룹 | `sg-063774d1ab4874831` (`deeplog-serving-sg`) — 22/8000/3000/8001/8002/9092, `update_sg_ip.sh`로 인바운드 IP 갱신 |
 | 키페어 | `deeplog-ec2-key` |
 | S3 버킷 | `deeplog-serving-2025720449` — 데이터/체크포인트 업로드용. 백업 워처 버그로 벤치마크 결과 자체는 여기 안 올라가 있음(§6.1) — 로컬 scp로 직접 회수함 |
-| 벤치마크 인스턴스 | `i-0ab588b123116424e` (온디맨드, g4dn.xlarge, T4) — 사용 후 **terminate 완료**, 더 이상 과금 없음 |
+| 벤치마크 인스턴스 (1차, 8/5) | `i-0ab588b123116424e` (온디맨드, g4dn.xlarge, T4) — HDFS 3사이클. **terminate 완료** |
+| 벤치마크 인스턴스 (2차, 8/6) | `i-0c20e3ae6e8b2214e` (온디맨드) — cycle4·5 추가 + Triton 버그 발견·수정(§4.3). **terminate 완료** |
+| 벤치마크 인스턴스 (3차, 8/6) | `i-0049b56fde150edea` (온디맨드) — Triton만 cycle6·7·8 재측정(수정판 코드). **terminate 완료**, 더 이상 과금 없음 |
 
 ### 6.3 재실행 방법 (BGL 등 후속 라운드용)
 
@@ -495,45 +586,52 @@ EC2_LAUNCH_MODE=ondemand bash experiments/aws/one_shot_launch.sh
 
 ---
 
-## 8. 벤치마크 결과 (HDFS, EC2 g4dn.xlarge T4, 2026-08-05)
+## 8. 벤치마크 결과 (HDFS, EC2 g4dn.xlarge T4, 2026-08-05~06)
 
-**측정 조건**: 3사이클(순서 랜덤화), concurrency sweep 1/4/8/16/32/64,
-단계별 30초 + 워밍업 5초. 원본 CSV: `experiments/results/cycle{1,2,3}/`.
-그림: `experiments/figures/fig1~6`. 통계 검정: `experiments/results/stat_test_hdfs.csv`.
-
-**알려진 결측**: cycle1의 triton 6개 concurrency 전부 결측(콜드스타트
-헬스체크 실패 1건, §스코프 이력 참고) — triton 관련 수치는 n=2, 나머지는
-n=3. `stat_test.py`가 이 차이를 `n_a`/`n_b` 컬럼에 반영해 계산함.
+**측정 조건**: concurrency sweep 1/4/8/16/32/64, 단계별 30초 + 워밍업 5초.
+FastAPI·BentoML은 cycle1~5(n=5, 8/5 측정), **Triton은 cycle4~8(n=5, 전부
+2026-08-06 버그 수정판 코드로 측정 — cycle1~3의 triton은 래퍼 버그로
+폐기, §4.3·§스코프 이력 참고)**. 원본 CSV: `experiments/results/cycle{N}/`,
+폐기분은 `experiments/results/_archived_buggy_triton/`. 그림:
+`experiments/figures/fig1~6`. 통계 검정:
+`experiments/results/stat_test_hdfs.csv`.
 
 ### 8.1 저/중/고 대표값 (사이클 평균, fig4 참고)
 
 | 부하 | 지표 | FastAPI | BentoML | Triton |
 |---|---|---|---|---|
-| 저 (c=4)  | p50 (ms)     | 5.3    | 8.8    | 3.2    |
-| 저 (c=4)  | throughput   | 651.6  | 424.2  | 305.9  |
-| 중 (c=16) | p50 (ms)     | 29.3   | 36.8   | 29.7   |
-| 중 (c=16) | throughput   | 413.9  | 383.9  | 351.8  |
-| 고 (c=64) | p50 (ms)     | 139.4  | 203.4  | 173.2  |
-| 고 (c=64) | p99 (ms)     | 1135.5 | 2377.1 | 1353.2 |
-| 고 (c=64) | throughput   | 303.5  | 161.7  | 244.4  |
+| 저 (c=4)  | p50 (ms)     | 5.3    | 8.7    | 6.0    |
+| 저 (c=4)  | throughput   | 655.1  | 430.7  | 601.7  |
+| 중 (c=16) | p50 (ms)     | 29.0   | 36.2   | 33.3   |
+| 중 (c=16) | throughput   | 418.4  | 388.8  | 367.3  |
+| 고 (c=64) | p50 (ms)     | 141.0  | 185.1  | 159.3  |
+| 고 (c=64) | p99 (ms)     | 1162.4 | 2299.0 | 1656.9 |
+| 고 (c=64) | throughput   | 297.9  | 174.6  | 242.3  |
 
 ### 8.2 관찰된 패턴
 
-- **저·중 부하에서는 FastAPI가 처리량 1위** — 프레임워크 오버헤드가 없는
-  베이스라인이 가벼운 부하에서는 가장 유리했다.
+- **FastAPI가 전 구간에서 처리량·지연시간 1위** — 프레임워크 오버헤드가
+  없는 베이스라인이 저·중·고 부하 모두에서 가장 유리했다.
+- **저부하(c=4)에서 Triton이 BentoML을 앞선다** (처리량 601.7 vs 430.7,
+  p50 6.0ms vs 8.7ms) — **버그 수정 전에는 이 반대로 보였다**(Triton이
+  세 프레임워크 중 최하위, 처리량 305.9)는 점이 중요하다. §4.3의 스레드
+  경쟁 버그가 저·중 동시성 구간에서 일부 요청을 조용히 실패시켜 Triton의
+  실제 성능을 과소평가하게 만들었었다 — 버그를 못 잡았다면 논문에 잘못된
+  결론(Triton이 저부하에서 가장 느리다)이 실릴 뻔했다.
 - **고부하(c=64)로 갈수록 BentoML이 급격히 무너진다** — p99가 2.3초까지
-  치솟고 처리량은 세 프레임워크 중 최하(161.7). 반면 **Triton은 고부하에서
-  BentoML을 확실히 앞지르며**(처리량 244.4 vs 161.7) "고성능 서빙"이라는
-  포지셔닝과 부합하는 패턴을 보인다.
+  치솟고 처리량은 세 프레임워크 중 최하(174.6). **Triton은 고부하에서
+  BentoML을 확실히 앞지르며**(처리량 242.3 vs 174.6) "고성능 서빙"이라는
+  포지셔닝과 부합하는 패턴을 보인다. 이 구간은 버그의 영향을 받지 않았던
+  구간이라(§4.3) 버그 수정 전후 수치가 거의 동일함(244.4 → 242.3).
 - **GPU 사용률**(fig6)은 세 프레임워크 모두 0이 아닌 값을 보인다 — §4.1
   GPU confound 수정이 실제 T4 환경에서도 유효했음을 데이터로 확인.
-- **통계적 유의성**: 사이클 수(n=3, triton은 n=2)가 작아 Mann-Whitney U가
-  도달 가능한 최소 p-value가 0.1~0.2로, 27건 검정 전부
-  `significant_at_0.05=False`다. **이건 차이가 없다는 뜻이 아니라 이
-  표본 크기로는 전통적 유의수준에 수학적으로 도달할 수 없다는 뜻** —
-  논문에서는 p-value 대신 위 median 차이(모든 사이클에서 순위가 뒤집히지
-  않고 일관됨)를 effect size로 제시하는 것을 권장(`stat_test.py`가 실행
-  시 이 caveat을 콘솔에 출력함).
+- **통계적 유의성**: n=5(양쪽)로 Mann-Whitney U가 도달 가능한 최소
+  p-value가 약 0.008까지 낮아지면서, **27건 중 25건이 `p<0.05`**에
+  도달했다. FastAPI-BentoML·FastAPI-Triton 쌍은 저/중/고 전 구간·전
+  지표(p50/p99/throughput)에서 유의했고, BentoML-Triton 쌍만 9건 중
+  2건(c=16 p99, c=64 p50)이 유의하지 않았다 — 이 둘이 성능상 가장 근접한
+  쌍이라는 관찰과 일치한다. 상세 p-value는
+  `experiments/results/stat_test_hdfs.csv` 참고.
 
 ### 8.3 사용 가능한 그림 목록
 
@@ -542,20 +640,27 @@ n=3. `stat_test.py`가 이 차이를 `n_a`/`n_b` 컬럼에 반영해 계산함.
 | `fig1_p50_latency.png` / `fig2_p99_latency.png` | concurrency sweep(1~64) 전체, 사이클 평균±표준편차 |
 | `fig3_throughput.png` | 처리량 sweep |
 | `fig4_summary_bar_hdfs.png` | 저/중/고 3단계 요약 비교 (위 8.1 표의 그래프 버전) |
-| `fig5_cpu_usage.png` / `fig6_gpu_usage.png` | CPU/GPU 사용률(%) sweep (2026-08-05 신규) |
+| `fig5_cpu_usage.png` / `fig6_gpu_usage.png` | CPU/GPU 사용률(%) sweep |
+
+모든 그림은 2026-08-06 최종(FastAPI/BentoML n=5, Triton n=5 클린 데이터)
+기준으로 재생성됨.
 
 ---
 
 ## 9. 다음 세션에서 확인할 것
 
-**코드/실험 관점에서는 이번 기말 스코프가 완료됐다.** 남은 건 논문·발표
+**코드/실험 관점에서는 이번 기말 스코프가 완료됐다.** FastAPI/BentoML/Triton
+모두 n=5의 클린한 데이터로 통계 검정까지 끝났다(§8). 남은 건 논문·발표
 자료 작성(별도로 진행 중)과, 시간이 남으면 처리할 만한 부차적인 항목들:
 
-- `spot_backup_watcher.sh`의 `/tmp` 경로 버그(§6.1) — 이번엔 결과를 scp로
+- `spot_backup_watcher.sh`의 `/tmp` 경로 버그(§6.1) — 이번에도 결과를 scp로
   직접 회수해 우회했지만, 다음 라운드(BGL 등)에서 스팟 인터럽션 대비가
   필요하면 먼저 고쳐야 함.
-- Triton cycle1 결측 1건 — 재실행해서 n=3으로 채울지, 이대로(n=2) 논문에
-  한계로 명시하고 갈지 결정 필요. 재실행 자체는 `EC2_LAUNCH_MODE=ondemand`로
-  인스턴스 한 번 더 띄우고 `run_benchmark.sh hdfs`만 다시 돌리면 됨(1
-  사이클만 필요하면 `CYCLES=1`로 좁혀서).
-- 오늘 세션에서 고친 버그들(§스코프 이력 08-04~05)의 커밋 여부 확인.
+- **오늘(8/6) 세션에서 변경한 코드가 아직 커밋 안 됨** — 커밋 필요한 파일:
+  - `serving/triton/app.py` — tritonclient를 동기→비동기(`aio`)로 교체(§4.3)
+  - `experiments/run_benchmark.sh` — `CYCLE_START` 환경변수 추가(§5)
+  - `experiments/results/` 아래 cycle4~8 결과, `_archived_buggy_triton/`,
+    갱신된 `stat_test_hdfs.csv`, `experiments/figures/`의 재생성된 그림들
+- BGL 라운드(졸업논문 스코프)를 시작하게 되면, 오늘 고친 Triton 래퍼
+  버그가 BGL 벤치마크에도 똑같이 영향을 줄 수 있었던 문제이니 — 이미
+  수정된 코드를 그대로 이어받으면 된다(재발 위험 없음, §4.3 참고).

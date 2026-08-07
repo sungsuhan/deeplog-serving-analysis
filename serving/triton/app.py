@@ -32,6 +32,7 @@ from typing import Optional
 
 import numpy as np
 import tritonclient.http as httpclient
+import tritonclient.http.aio as httpclient_aio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, field_validator
 
@@ -40,7 +41,13 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # ── 싱글톤 상태 ────────────────────────────────────────────────────────────────
 class _AppState:
-  client:     httpclient.InferenceServerClient  # Triton HTTP 클라이언트
+  # tritonclient.http(동기, gevent 기반)는 FastAPI가 sync 엔드포인트를
+  # 스레드풀에 분산 디스패치할 때 "Cannot switch to a different thread"로
+  # 죽는다(gevent greenlet이 생성된 스레드에 고정되기 때문) — 2026-08-06
+  # 실제 재현: /health가 500, 8/5 실행 데이터에도 concurrency=4/8에서만
+  # n_errors>0로 이미 흔적이 있었음. aio(asyncio 기반) 클라이언트로 교체해
+  # 스레드 경계를 아예 없앰.
+  client:     httpclient_aio.InferenceServerClient  # Triton HTTP 클라이언트 (async)
   config:     dict                               # 모델 하이퍼파라미터
   model_name: str
 
@@ -68,11 +75,11 @@ async def lifespan(app: FastAPI):
   _state.model_name = os.getenv("MODEL_NAME", "deeplog")
 
   _load_config()
-  _state.client = httpclient.InferenceServerClient(url=triton_url, verbose=False)
+  _state.client = httpclient_aio.InferenceServerClient(url=triton_url, verbose=False)
 
-  if not _state.client.is_server_live():
+  if not await _state.client.is_server_live():
     raise RuntimeError(f"Triton 서버에 연결할 수 없습니다: {triton_url}")
-  if not _state.client.is_model_ready(_state.model_name):
+  if not await _state.client.is_model_ready(_state.model_name):
     raise RuntimeError(f"모델 '{_state.model_name}'이 Triton에 로드되지 않았습니다")
 
   print(
@@ -80,7 +87,7 @@ async def lifespan(app: FastAPI):
     f"model={_state.model_name}  window={_state.config['window_size']}"
   )
   yield
-  _state.client.close()
+  await _state.client.close()
 
 
 app = FastAPI(title="DeepLog — Triton wrapper", version="1.0", lifespan=lifespan)
@@ -107,7 +114,7 @@ class PredictResponse(BaseModel):
 
 
 # ── 추론 ─────────────────────────────────────────────────────────────────────
-def _infer(log_keys: list[int]) -> tuple[list[int], list[float]]:
+async def _infer(log_keys: list[int]) -> tuple[list[int], list[float]]:
   expected    = _state.config["window_size"] - 1
   num_classes = _state.config["num_classes"]
   g           = _state.config["num_candidates"]
@@ -129,7 +136,7 @@ def _infer(log_keys: list[int]) -> tuple[list[int], list[float]]:
   infer_output = httpclient.InferRequestedOutput("output__0")
 
   # Triton HTTP 호출 → C++ 런타임에서 TorchScript 모델 실행
-  result = _state.client.infer(
+  result = await _state.client.infer(
     model_name = _state.model_name,
     inputs     = [infer_input],
     outputs    = [infer_output],
@@ -148,21 +155,21 @@ def _infer(log_keys: list[int]) -> tuple[list[int], list[float]]:
 
 # ── 엔드포인트 ────────────────────────────────────────────────────────────────
 @app.get("/health")
-def health():
+async def health():
   return {
     "status":         "ok",
     "dataset":        _state.config.get("dataset"),
-    "triton_live":    _state.client.is_server_live(),
-    "model_ready":    _state.client.is_model_ready(_state.model_name),
+    "triton_live":    await _state.client.is_server_live(),
+    "model_ready":    await _state.client.is_model_ready(_state.model_name),
     "window_size":    _state.config.get("window_size"),
     "num_candidates": _state.config.get("num_candidates"),
   }
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(req: PredictRequest):
+async def predict(req: PredictRequest):
   t0 = time.perf_counter()
-  top_candidates, probabilities = _infer(req.log_keys)
+  top_candidates, probabilities = await _infer(req.log_keys)
   latency_ms = (time.perf_counter() - t0) * 1000.0
 
   is_anomaly = (

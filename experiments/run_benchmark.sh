@@ -20,13 +20,19 @@
 # Usage:
 #   bash experiments/run_benchmark.sh [hdfs|bgl|all]
 #
-# 환경변수로 조정 가능: DURATION, CONCURRENCY, CYCLES
+# 기존 사이클에 이어서 추가로 돌리고 싶으면(예: 3사이클 결과에 4~5회차를
+# 덧붙임) CYCLE_START를 같이 지정한다 — cycle{1..N} 디렉토리가 프레임워크별
+# CSV 파일 단위라 겹치지 않는 한 기존 사이클을 덮어쓰지 않는다.
+#   CYCLE_START=4 CYCLES=5 bash experiments/run_benchmark.sh hdfs
+#
+# 환경변수로 조정 가능: DURATION, CONCURRENCY, CYCLES, CYCLE_START
 set -euo pipefail
 
 DATASET="${1:-all}"
 DURATION="${DURATION:-30}"
 CONCURRENCY="${CONCURRENCY:-1 4 8 16 32 64}"
 CYCLES="${CYCLES:-3}"
+CYCLE_START="${CYCLE_START:-1}"
 RESULTS_DIR="experiments/results"
 PYTHON="python"
 COMPOSE_FILE="docker/docker-compose.yml"
@@ -152,7 +158,7 @@ run_framework() {
 # ── 순서 랜덤화 + 사이클 반복 ─────────────────────────────────────────────────
 run_dataset() {
   local dataset="$1"
-  for cycle in $(seq 1 "$CYCLES"); do
+  for cycle in $(seq "$CYCLE_START" "$CYCLES"); do
     local order
     order=($(shuf -e "${FRAMEWORKS[@]}"))
     echo ""
@@ -175,8 +181,8 @@ echo "finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$MANIFEST"
 
 echo ""
 echo "════════════════════════════════════"
-echo "  Benchmark complete — $CYCLES cycles"
-echo "  Results in : $RESULTS_DIR/cycle{1..$CYCLES}/"
+echo "  Benchmark complete — cycles $CYCLE_START..$CYCLES"
+echo "  Results in : $RESULTS_DIR/cycle{$CYCLE_START..$CYCLES}/"
 echo "  Manifest   : $MANIFEST"
 echo "════════════════════════════════════"
 ls -lh "$RESULTS_DIR"
