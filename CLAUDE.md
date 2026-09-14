@@ -26,8 +26,11 @@ DeepLog(LSTM 기반 로그 이상탐지 모델)을 FastAPI, BentoML, Triton 세 
 - **프레임워크: FastAPI / BentoML / Triton 3종 그대로.** 축소하지 않는다 — 스코프를
   좁힐 때 가장 마지막에 건드릴 항목.
 - **부하 단계: 저·중·고 3단계 그대로.**
-- **반복 측정: 3사이클.** 원래 계획은 5사이클이었으나 시간 제약으로 축소
-  (`experiments/run_benchmark.sh`의 `CYCLES` 기본값과 일치).
+- **반복 측정: 5사이클.** 시간 제약으로 한때 3사이클까지 줄였으나 2026-08-06에
+  원래 계획대로 5사이클로 되돌렸다 — n=3에서는 Mann-Whitney U(양측)가 도달 가능한
+  최소 p-value가 약 0.1이라 유의수준 0.05에 원천적으로 도달할 수 없었기 때문이다
+  (`experiments/run_benchmark.sh`의 `CYCLES` 기본값과 일치). 기존 사이클에 이어
+  붙일 때는 `CYCLE_START`로 시작 번호를 지정한다.
 - **자원 사용률(CPU/GPU) 로깅: 포함.** `experiments/benchmark.py`의
   `--container`/`--monitor-gpu` 옵션으로 측정.
 

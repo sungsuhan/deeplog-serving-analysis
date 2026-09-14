@@ -1,0 +1,6 @@
+dataset=hdfs duration=30s concurrency=[1 4 8 16 32 64] cycles=3
+started_at=2026-08-05T11:32:37Z
+cycle=1 dataset=hdfs order=bentoml triton fastapi
+cycle=2 dataset=hdfs order=triton fastapi bentoml
+cycle=3 dataset=hdfs order=fastapi bentoml triton
+finished_at=2026-08-05T12:06:31Z

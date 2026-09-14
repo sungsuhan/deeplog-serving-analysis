@@ -7,7 +7,8 @@
 #     기동 → 측정 → 종료한 뒤 다음 프레임워크로 넘어간다.
 #   - 순서 효과(order effect) 방지를 위해 측정 사이클마다 프레임워크 실행
 #     순서를 랜덤화한다.
-#   - 3회 반복 측정 (CYCLES=3).
+#   - 5회 반복 측정 (CYCLES=5) — n=3에서는 Mann-Whitney U(양측)의 최소 도달
+#     가능 p-value가 약 0.1이라 유의수준 0.05에 도달할 수 없다(stat_test.py 참고).
 #
 # Prerequisites:
 #   1. python model/train.py --dataset hdfs   (BGL도 비교하려면 --dataset bgl 추가)
@@ -31,7 +32,7 @@ set -euo pipefail
 DATASET="${1:-all}"
 DURATION="${DURATION:-30}"
 CONCURRENCY="${CONCURRENCY:-1 4 8 16 32 64}"
-CYCLES="${CYCLES:-3}"
+CYCLES="${CYCLES:-5}"
 CYCLE_START="${CYCLE_START:-1}"
 RESULTS_DIR="experiments/results"
 PYTHON="python"
