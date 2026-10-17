@@ -21,8 +21,14 @@ class DeepLog(nn.Module):
 
   input_size == num_classes 인 이유:
     one-hot 벡터의 차원이 vocab 크기와 같기 때문.
-    임베딩 레이어를 쓰지 않는 것은 원 논문의 구현을 따른 것이며,
-    vocab이 크지 않은(100개 수준) 로그 도메인에서는 one-hot으로 충분하다.
+    임베딩 레이어를 쓰지 않는 것은 원 논문의 구현을 따른 것이다.
+
+  아키텍처는 데이터셋과 무관하게 고정한다:
+    HDFS와 BGL은 vocab 크기가 30배 이상 차이나 BGL의 one-hot 입력이 훨씬
+    넓어지지만, 임베딩 레이어를 추가하는 등 구조를 데이터셋마다 바꾸지 않는다.
+    이 연구는 서빙 프레임워크 비교가 목적이므로 두 데이터셋에서 같은 구조를
+    써야 결과를 같은 표에서 비교할 수 있다. 데이터셋별로 달라지는 것은
+    input_size/num_classes(= vocab 크기)뿐이다.
   """
 
   def __init__(self, input_size: int, hidden_size: int,
