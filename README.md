@@ -136,6 +136,13 @@ python model/train.py --dataset <ds>           # → model/checkpoints/<ds>/
 하이퍼파라미터는 두 데이터셋 모두 기본값을 그대로 씁니다. 결과물은 PyTorch 가중치,
 TorchScript 모델, 그리고 세 서빙 스택이 함께 읽는 `config.json`입니다.
 
+학습은 에폭마다 진행 상태를 저장합니다. 중간에 컴퓨터를 꺼도 다시 켠 뒤 아래처럼
+이어서 진행할 수 있고, 정식 결과물은 마지막 에폭이 끝난 뒤에만 만들어집니다.
+
+```bash
+python model/train.py --dataset <ds> --resume
+```
+
 ### 3. 서빙 모델 패키징
 
 ```bash

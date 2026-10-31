@@ -11,13 +11,30 @@ DeepLog 학습 스크립트.
   deeplog.ts       TorchScript 변환본 (Triton에서 C++ 런타임으로 직접 실행)
   config.json      세 서빙 스택이 공유하는 하이퍼파라미터
 
+학습 중에만 존재하는 파일 (학습이 끝나도 남겨둠 — 재개·재현 기록용):
+  train_state.pt         매 에폭 끝의 진행 상태 (가중치·옵티마이저·셔플 난수·best 기록)
+  best_in_progress.pt    학습 도중의 val_loss 기준 최적 가중치
+
+  정식 산출물(deeplog_best.pt/deeplog.ts/config.json)은 마지막 에폭이 끝난 뒤에만
+  만든다. 학습 도중 중단된 디렉토리에는 서빙 스크립트가 찾는 파일이 하나도 없으므로,
+  미완성 가중치가 BentoML 등록·Triton 레포 생성·S3 동기화에 잘못 쓰이지 않는다.
+
 사용법:
   python model/train.py --dataset hdfs
-  python model/train.py --dataset bgl --epochs 50 --batch-size 4096
+  python model/train.py --dataset bgl --resume     # 중단된 학습을 이어서 진행
+
+이어 학습(--resume):
+  노트북을 계속 켜둘 수 없는 환경에서 30에폭(BGL 약 7시간)을 나눠 돌리기 위해
+  추가했다(2026-10-31). 에폭이 끝날 때마다 train_state.pt를 저장하고, --resume으로
+  다시 실행하면 다음 에폭부터 이어 간다. 셔플 난수 상태까지 복원하므로 데이터 순서는
+  한 번에 끝까지 돌린 경우와 같다. 중단 시 잃는 건 진행 중이던 에폭 하나뿐이다.
+  하이퍼파라미터가 저장된 상태와 다르면 재개를 거부한다(다른 설정이 섞인 모델 방지).
 """
 
 import argparse
 import json
+import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -164,6 +181,28 @@ def export_torchscript(model, out_path: Path) -> None:
   print(f"  TorchScript saved -> {out_path}")
 
 
+TRAIN_STATE_FILE = "train_state.pt"
+BEST_IN_PROGRESS = "best_in_progress.pt"
+
+
+def _atomic_save(obj, path: Path) -> None:
+  """임시 파일에 쓴 뒤 교체한다 — 저장 도중 전원이 꺼지거나 절전에 들어가도
+  기존 파일이 반쯤 쓰인 상태로 깨지지 않게 하기 위함."""
+  tmp = path.with_name(path.name + ".tmp")
+  torch.save(obj, tmp)
+  os.replace(tmp, path)
+
+
+def _run_signature(args, num_classes: int, n_train: int, n_val: int) -> dict:
+  """재개 시 같은 실험인지 확인하는 기준. 하나라도 다르면 이어 붙이지 않는다."""
+  return {
+    "dataset": args.dataset, "num_classes": num_classes,
+    "hidden_size": args.hidden_size, "num_layers": args.num_layers,
+    "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr,
+    "val_split": args.val_split, "n_train": n_train, "n_val": n_val,
+  }
+
+
 def main() -> None:
   parser = argparse.ArgumentParser(description="DeepLog 학습 스크립트")
   parser.add_argument("--dataset",        choices=["hdfs", "bgl"], required=True)
@@ -179,6 +218,8 @@ def main() -> None:
   parser.add_argument("--val-split",      type=float, default=DEFAULT_VAL_SPLIT)
   parser.add_argument("--num-candidates", type=int,   default=DEFAULT_NUM_CANDIDATES,
                       help="추론 시 top-g 후보 수 (config.json에 저장)")
+  parser.add_argument("--resume",         action="store_true",
+                      help="checkpoints/<dataset>/train_state.pt에서 이어서 학습")
   args = parser.parse_args()
 
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -197,6 +238,11 @@ def main() -> None:
   epoch_generator = torch.Generator().manual_seed(42)
 
   # 모델 초기화
+  # 초기 가중치 시드 고정(2026-10-31 추가): 이전에는 데이터 분할·셔플만 시드가
+  # 있고 가중치 초기화에는 없어, 같은 설정으로 돌려도 실행마다 다른 모델이
+  # 나왔다(HDFS 체크포인트는 이 수정 전에 학습됨). 이어 학습이 "한 번에 끝까지
+  # 돌린 것과 같은 결과"를 내는지 검증하려면 출발점부터 같아야 한다.
+  torch.manual_seed(42)
   # input_size = num_classes: one-hot 벡터 차원 = vocab 크기
   model = DeepLog(
     input_size  = num_classes,
@@ -211,12 +257,40 @@ def main() -> None:
 
   ckpt_dir = args.ckpt_dir / args.dataset
   ckpt_dir.mkdir(parents=True, exist_ok=True)
+  state_path = ckpt_dir / TRAIN_STATE_FILE
+  best_path  = ckpt_dir / BEST_IN_PROGRESS
+  signature  = _run_signature(args, num_classes, train_inputs.size(0), val_inputs.size(0))
 
   # 학습 루프 — val_loss 기준 best 모델 체크포인트 저장
   best_val_loss = float("inf")
   best_epoch    = -1
+  start_epoch   = 1
 
-  for epoch in range(1, args.epochs + 1):
+  if args.resume:
+    if not state_path.exists():
+      sys.exit(f"[ERROR] 이어서 학습할 상태가 없습니다: {state_path}\n"
+               "  처음부터 학습하려면 --resume 없이 실행하세요.")
+    # map_location="cpu": 셔플 생성기는 CPU 생성기라 상태 텐서도 CPU여야 한다.
+    # 가중치·옵티마이저는 load_state_dict가 모델이 있는 장치로 알아서 옮긴다.
+    state = torch.load(state_path, map_location="cpu", weights_only=False)
+    if state["signature"] != signature:
+      diff = {k: (state["signature"].get(k), v) for k, v in signature.items()
+              if state["signature"].get(k) != v}
+      sys.exit(f"[ERROR] 저장된 학습과 설정이 다릅니다 (저장값, 현재값): {diff}")
+    model.load_state_dict(state["model"])
+    optimizer.load_state_dict(state["optimizer"])
+    epoch_generator.set_state(state["generator"])
+    best_val_loss = state["best_val_loss"]
+    best_epoch    = state["best_epoch"]
+    start_epoch   = state["epoch"] + 1
+    print(f"[INFO] resume   : epoch {state['epoch']}까지 완료된 상태에서 재개 "
+          f"(best epoch {best_epoch}, val_loss {best_val_loss:.4f})")
+  elif state_path.exists():
+    sys.exit(f"[ERROR] 진행 중인 학습 상태가 있습니다: {state_path}\n"
+             "  이어서 하려면 --resume을 붙이고, 처음부터 다시 하려면 이 디렉토리의\n"
+             f"  {TRAIN_STATE_FILE}와 {BEST_IN_PROGRESS}를 직접 지운 뒤 실행하세요.")
+
+  for epoch in range(start_epoch, args.epochs + 1):
     t0         = time.time()
     train_loss = train_one_epoch(
       model, train_inputs, train_targets, num_classes, args.batch_size,
@@ -232,7 +306,15 @@ def main() -> None:
     if is_best:
       best_val_loss = val_loss
       best_epoch    = epoch
-      torch.save(model.state_dict(), ckpt_dir / "deeplog_best.pt")
+      _atomic_save(model.state_dict(), best_path)
+
+    # 에폭 끝 진행 상태 저장 — 다음 실행에서 --resume으로 여기부터 이어 간다
+    _atomic_save({
+      "epoch": epoch, "signature": signature,
+      "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+      "generator": epoch_generator.get_state(),
+      "best_val_loss": best_val_loss, "best_epoch": best_epoch,
+    }, state_path)
 
     print(
       f"Epoch [{epoch:3d}/{args.epochs}] "
@@ -242,6 +324,9 @@ def main() -> None:
     )
 
   print(f"\n[DONE] Best epoch: {best_epoch}  val_loss: {best_val_loss:.4f}")
+
+  # 전 에폭 완료 — 이제서야 서빙 스크립트가 찾는 정식 산출물을 만든다
+  shutil.copy2(best_path, ckpt_dir / "deeplog_best.pt")
 
   # 최적 가중치 로드 후 TorchScript 변환
   model.load_state_dict(torch.load(
