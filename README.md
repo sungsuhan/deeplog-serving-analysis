@@ -103,7 +103,115 @@ deeplog-serving-analysis/
 
 ## 🚀 실행 방법
 
-> 추후 업데이트 예정
+아래 명령은 모두 저장소 루트에서 실행합니다. `<ds>` 자리에는 `hdfs` 또는 `bgl`을 넣습니다.
+공식 벤치마크 수치는 AWS EC2 g4dn.xlarge(T4)에서만 측정하며, 로컬은 개발·검증용입니다.
+
+### 0. 준비
+
+- Python 3.11, Docker(+ compose 플러그인), NVIDIA GPU와 드라이버(NVIDIA Container Toolkit)
+- 환경변수 파일 복사 후 값 입력 (`.env`는 커밋하지 않습니다)
+
+```bash
+cp .env.example .env
+python -m venv .venv && source .venv/bin/activate      # Windows Git Bash: source .venv/Scripts/activate
+pip install -r data/requirements.txt -r model/requirements.txt \
+            -r experiments/requirements.txt -r kafka/requirements.txt
+```
+
+### 1. 데이터 다운로드·전처리
+
+```bash
+bash data/download.sh                          # LogHub(Zenodo)에서 HDFS_1, BGL 원본 → data/raw/
+python data/preprocess.py --dataset <ds>       # → data/processed/<ds>/ (기본값 all = 둘 다)
+```
+
+BGL은 원본 로그를 Drain으로 직접 파싱하므로 처음 한 번은 수 분 이상 걸립니다(결과는 캐시됨).
+
+### 2. DeepLog 학습
+
+```bash
+python model/train.py --dataset <ds>           # → model/checkpoints/<ds>/
+```
+
+하이퍼파라미터는 두 데이터셋 모두 기본값을 그대로 씁니다. 결과물은 PyTorch 가중치,
+TorchScript 모델, 그리고 세 서빙 스택이 함께 읽는 `config.json`입니다.
+
+### 3. 서빙 모델 패키징
+
+```bash
+python serving/triton/setup_model.py --dataset <ds>   # → serving/triton/models/<ds>/
+docker compose -f docker/docker-compose.yml build fastapi bentoml triton-wrapper
+docker compose -f docker/docker-compose.yml run --rm bentoml \
+  python serving/bentoml/save_model.py --dataset <ds>  # BentoML 모델 deeplog-<ds> 등록
+```
+
+### 4. 서빙 실행·확인
+
+세 프레임워크가 띄울 데이터셋은 `DEEPLOG_DATASET` 하나로 함께 정해집니다(기본 `hdfs`).
+
+```bash
+export DEEPLOG_DATASET=<ds>
+docker compose -f docker/docker-compose.yml up -d fastapi          # :8000
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/predict -H 'Content-Type: application/json' \
+     -d '{"log_keys": [0,1,2,3,4,5,6,7,8], "next_key": 9}'
+docker compose -f docker/docker-compose.yml down
+```
+
+| 프레임워크 | 기동할 서비스 | 엔드포인트 | `/health` |
+|---|---|---|---|
+| FastAPI | `fastapi` | `http://localhost:8000` | GET |
+| BentoML | `bentoml` | `http://localhost:3000` | **POST** |
+| Triton | `triton` → `triton-wrapper` | `http://localhost:8002` | GET |
+
+세 프레임워크는 같은 요청·응답 스키마(`top_candidates`, `probabilities`, `is_anomaly`,
+`latency_ms`)를 씁니다.
+
+### 5. 벤치마크
+
+```bash
+bash experiments/run_benchmark.sh <ds>
+```
+
+- 프레임워크를 하나씩 기동 → 측정 → 종료하며, 사이클마다 실행 순서를 무작위로 바꿉니다.
+  세 프레임워크를 동시에 띄우지 않습니다.
+- 기본 조건: concurrency 1/4/8/16/32/64, 단계별 30초, 5사이클. 저·중·고 부하 대표값은 4·16·64입니다.
+- 측정 직전 각 서버의 `/health`가 보고하는 데이터셋이 `<ds>`와 다르면 측정 없이 중단합니다.
+- 결과는 `experiments/results/cycle<N>/`, 실행 조건과 순서는 `experiments/results/run_manifest_*.txt`에 남습니다.
+- 기존 사이클 뒤에 이어 붙이려면 `CYCLE_START=6 CYCLES=8 bash experiments/run_benchmark.sh <ds>`처럼 지정합니다.
+
+### 6. 시각화·통계 검정
+
+```bash
+python experiments/plot_results.py                 # → experiments/figures/fig1~6
+python experiments/stat_test.py --dataset <ds>     # Mann-Whitney U, 저·중·고 부하 기준
+```
+
+### 7. Kafka 스트리밍 경로 (선택)
+
+Kafka는 실시간 스트리밍 아키텍처를 보여주기 위한 구성이며, 프레임워크 성능 비교 수치는
+5단계의 직접 호출 벤치마크로만 냅니다. 두 경로의 수치를 섞지 않으려면 컨슈머 출력은
+`experiments/results/` 밖에 둡니다.
+
+```bash
+docker compose -f docker/docker-compose.yml up -d kafka fastapi
+python kafka/producer.py --dataset <ds> --rps 100
+python kafka/consumer.py --topic deeplog-<ds> --endpoint http://localhost:8000 \
+  --framework fastapi --output kafka_runs/kafka_fastapi_<ds>.csv
+```
+
+### 8. EC2에서 공식 측정
+
+```bash
+bash experiments/aws/update_sg_ip.sh                 # 접속 IP가 바뀌었을 때
+EC2_LAUNCH_MODE=ondemand bash experiments/aws/one_shot_launch.sh
+# 인스턴스 접속 후
+source .venv/bin/activate && bash experiments/run_benchmark.sh <ds>
+```
+
+`one_shot_launch.sh`는 데이터·체크포인트 S3 업로드부터 인스턴스 기동, 이미지 빌드,
+모델 등록까지 처리하고 벤치마크 실행 직전에 멈춥니다. 필요한 환경변수는 스크립트 상단
+주석을 참고하세요. 측정이 끝나면 결과를 회수하고 인스턴스를 반드시 terminate합니다.
 
 ---
 
