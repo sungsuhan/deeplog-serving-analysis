@@ -2,12 +2,12 @@
 
 > 이 문서는 **코드 없이 논문을 쓰는 사람(채팅 Claude/ChatGPT 등)을 위한 스냅샷**입니다.
 > 소스는 항상 코드이고, 이 문서는 특정 시점의 재생성 가능한 요약본입니다.
-> **마지막 갱신: 2026-10-13. 기말(2026-08-11) 발표 라운드는 HDFS만으로 종료됐고
-> (FastAPI/BentoML/Triton 모두 n=5, 27건 중 25건 p<0.05 — §8), 이제 졸업논문
-> 스코프로 돌아가 BGL 라운드를 시작한다. 이번 갱신은 그 스코프 전환을 반영한
-> 것이다 — 모델 아키텍처 고정 원칙, 측정 조건 동일 유지, Kafka의 위치, 범위 밖
-> 항목을 정했다(§스코프 이력 2026-10-13). HDFS 측정값과 결론(§8)은 바뀌지
-> 않았다.**
+> **마지막 갱신: 2026-10-31. 기말(2026-08-11) 발표 라운드는 HDFS만으로 종료됐고
+> (FastAPI/BentoML/Triton 모두 n=5, 27건 중 25건 p<0.05 — §8), 현재 졸업논문
+> BGL 라운드 진행 중이다. 이번 갱신 내용: BGL 학습을 로컬 GPU에서 시작했고,
+> 서빙 스택이 데이터셋을 하나만 담도록 되어 있어 BGL 벤치마크가 잘못 측정될
+> 수 있던 문제를 발견·수정했다(§스코프 이력 2026-10-31). HDFS 측정값과
+> 결론(§8)은 바뀌지 않았다.**
 > 코드가 바뀌면 이 문서도 다시 생성해야 합니다 — 특히 하이퍼파라미터·설정값은
 > 아래 표만 믿지 말고 실제 config 파일과 대조하세요.
 
@@ -18,8 +18,8 @@
 | 단계 | 상태 | 비고 |
 |---|---|---|
 | 1. 환경 설정 (.env) | ✅ 완료 | `DEEPLOG_S3_BUCKET` 추가됨(§6) |
-| 2. 데이터 다운로드·전처리 | ✅ 완료(HDFS·BGL 모두) | §2 참조. 단 **이번 기말 스코프는 HDFS만** — §스코프 참고 |
-| 3. DeepLog 학습 | ✅ 완료(HDFS만) | §3 참조. BGL은 스코프 밖 |
+| 2. 데이터 다운로드·전처리 | ✅ 완료(HDFS·BGL 모두) | §2 참조. 기말 라운드는 HDFS만 사용, BGL 라운드에서 BGL 산출물 사용 |
+| 3. DeepLog 학습 (HDFS) | ✅ 완료 | §3 참조. BGL 학습은 아래 12행 |
 | 4. 모델 변환/패키징 (Triton TorchScript, BentoML) | ✅ 완료 | §3·§4 참조 |
 | 5. Docker 스택 통합·스모크 테스트 | ✅ 완료(로컬) | §4 참조 — 버그 5개 발견·수정 |
 | 6. EC2 인프라 준비 | ✅ 완료 (quota 승인됨, 사용한 인스턴스 3대 모두 terminate함 — §6.2) | §6 참조 |
@@ -28,7 +28,9 @@
 | 9. 결과 보관 | ✅ 완료 (2026-09-12) | 결과 CSV·그림을 `.gitignore`에서 빼 저장소에 포함 — §스코프 이력 2026-09-12 |
 | 10. BGL 라운드 스코프 확정 | ✅ 완료 (2026-10-13) | §스코프 이력 2026-10-13 |
 | 11. BGL 이상 판정 기준(`num_candidates`) 결정 | ✅ 완료 (2026-10-13, g=9) | §스코프 이력 2026-10-13 |
-| 12. BGL 학습·서빙 패키징·로컬 검증 | ⏳ 다음 | §9 |
+| 12. BGL 학습 | ⏳ 진행 중 (2026-10-31 시작, 로컬 GPU, 30에폭 약 7시간 예상) | §스코프 이력 2026-10-31 |
+| 12-1. 서빙 스택 데이터셋 분리 + 서빙 데이터셋 검증 장치 | ✅ 코드 수정 완료 / ⬜ 실제 기동 검증 대기 | §스코프 이력 2026-10-31 |
+| 12-2. BGL 서빙 패키징·로컬 검증 | ⬜ 대기 (학습 완료 후) | §9 |
 | 13. BGL EC2 벤치마크·분석 | ⬜ 대기 | §9 |
 
 **HDFS는 논문에 쓸 실측 수치·그래프·통계 검정 결과가 전부 있고 원본도
@@ -243,9 +245,10 @@ p-value 약 0.1)를 그대로 반복**하게 된다. `CYCLES` 기본값을 5로,
   "모델 고정" 원칙에도 어긋난다. hidden size·층 수·window도 HDFS와 동일하게
   유지한다. 오히려 같은 서빙 스택에 더 무거운 워크로드를 하나 더 얹는 셈이라,
   HDFS에서 본 프레임워크 순위가 모델이 무거워져도 유지되는지가 논의 거리가 된다.
-  코드 변경은 필요 없다 — vocab 크기는 학습·서빙·Triton 설정 생성 모두
-  `vocab.json`/`config.json`에서 읽으며 어디에도 하드코딩돼 있지 않음을
-  확인했다. `model/deeplog.py` 주석의 "vocab 100개 수준이라 one-hot으로
+  vocab 크기는 학습·서빙·Triton 설정 생성 모두 `vocab.json`/`config.json`에서
+  읽으며 어디에도 하드코딩돼 있지 않음을 확인했다. (당시 "코드 변경은 필요
+  없다"고 판단했으나 이는 학습까지만 맞았다 — 서빙 스택이 데이터셋을 하나만
+  담는 구조라 수정이 필요했다. 아래 10-31 이력 참고.) `model/deeplog.py` 주석의 "vocab 100개 수준이라 one-hot으로
   충분" 문구만 이 원칙으로 교체했다.
 - **이상 판정 기준(`num_candidates`, top-g): BGL도 HDFS와 같은 9로 결정.**
   `model/train.py` 기본값 그대로라 학습 시 별도 옵션이 필요 없다. 이 값은
@@ -273,6 +276,76 @@ p-value 약 0.1)를 그대로 반복**하게 된다. `CYCLES` 기본값을 5로,
   07-31 결정(§4.2)을 BGL 라운드에도 그대로 적용.
 - **범위 밖(별도 확장 챕터 또는 향후 연구)**: K8s 확장, CI/CD 구축, Kafka 경로
   end-to-end 지연 측정.
+
+### 2026-10-31 — BGL 학습 시작, 서빙 스택의 "모델 하나" 전제 발견·수정
+
+**BGL 학습**: `python model/train.py --dataset bgl`, 하이퍼파라미터·g 모두
+기본값(= HDFS와 동일). 본 학습 전에 몇 배치로 소요 시간을 측정해 실행 위치를
+정했다.
+
+| 항목 | 로컬 CPU | 로컬 GPU (MX450) |
+|---|---|---|
+| 배치당 (2048) | 약 621ms | 약 259ms |
+| 30에폭 추정 (학습만) | 약 9.8시간 | 약 4.1시간 |
+
+HDFS 때는 모델이 작아 로컬 GPU가 오히려 CPU보다 느렸지만(§3), BGL은 one-hot
+입력 폭이 34배라 GPU가 2.4배 빨라 로컬 GPU를 택했다. 실제 1에폭은 검증 포함
+약 851초(val_loss 0.2192)로, 30에폭 약 7시간이 예상된다. 학습 로그는
+`model/checkpoints/bgl/train.log`(체크포인트 디렉토리라 저장소에는 없음).
+학습 위치(로컬)는 서빙 성능 측정과 무관하다 — 공식 벤치마크는 그대로 EC2에서만
+한다.
+
+**발견한 문제 — 서빙 스택이 데이터셋을 하나만 담는 구조였다**: 학습을 기다리며
+BGL 서빙 준비를 점검하다 발견. 세 프레임워크가 모두 "모델은 하나"를 전제했다.
+- FastAPI: `docker-compose.yml`에 `DATASET=hdfs`, `CKPT_DIR=.../hdfs` 하드코딩.
+- BentoML: 모델 이름이 항상 `deeplog`이고 `latest` 태그를 띄움 — 마지막에
+  등록한 데이터셋 모델이 서빙됨.
+- Triton: `setup_model.py`가 항상 `serving/triton/models/deeplog/`에 씀 —
+  나중에 만든 데이터셋이 앞의 것을 덮어씀.
+- `run_benchmark.sh bgl`은 `benchmark.py`의 요청 payload만 BGL로 바꾸고 컨테이너
+  쪽 모델은 바꾸지 않았다.
+
+**영향(수정하지 않았다면)**: `run_benchmark.sh bgl`을 그대로 돌리면 HDFS 모델에
+BGL 입력(키 값이 vocab 29를 넘음)이 들어가 에러가 나거나 엉뚱한 값이 측정됐을
+것이다. 더 위험한 건 EC2 경로다 — `bootstrap_ec2.sh`는 `DATASETS="hdfs bgl"`을
+차례로 돌며 Triton 레포 생성과 BentoML 등록을 하므로, BGL이 S3에 올라간 뒤
+부트스트랩하면 **Triton·BentoML은 BGL, FastAPI는 HDFS를 서빙**하는 상태가 된다.
+이 상태로 측정하면 프레임워크마다 다른 모델을 비교하게 되고, 에러 없이 조용히
+진행될 수 있었다. HDFS 라운드에는 BGL이 S3에 없어 부트스트랩이 BGL을 건너뛰었기
+때문에 영향이 없었다.
+
+**수정**:
+- **데이터셋 선택을 `DEEPLOG_DATASET` 하나로 통일** — `docker-compose.yml`에서
+  FastAPI 체크포인트 경로, BentoML 모델 이름, Triton 레포 마운트가 모두 이 값을
+  따른다(기본 `hdfs`). 변수 이름을 `DATASET`으로 하지 않은 이유: `run_benchmark.sh`
+  안에서 `DATASET`이 `all`일 수 있고 `.env`의 학습용 `DATASET`과도 겹치기 때문.
+- **저장 위치를 데이터셋별로 분리** — BentoML은 `deeplog-<dataset>` 이름으로
+  등록(`save_model.py` 기본값), Triton은 `serving/triton/models/<dataset>/deeplog/`
+  에 생성(`setup_model.py` 기본값). Triton 서버에는 한 번에 한 데이터셋 레포만
+  마운트되므로, 모델 두 개가 동시에 GPU에 올라가 측정 조건이 HDFS 라운드와
+  달라지는 일도 없다.
+- **측정 직전 서빙 데이터셋 검증** — `run_benchmark.sh`가 데이터셋마다
+  `DEEPLOG_DATASET`을 export하고, 헬스체크 통과 후 각 서버 `/health`의 `dataset`
+  필드(세 프레임워크 공통)를 읽어 기대값과 다르면 **측정 없이 즉시 중단**한다.
+  기존 헬스체크 실패는 해당 프레임워크만 건너뛰지만, 이 불일치는 설정 오류라 모든
+  사이클에 영향을 주므로 전체를 멈춘다. 확인된 값은 `run_manifest_*.txt`에
+  `served_dataset=`으로 남는다. 가짜 서버로 일치·불일치·무응답 세 경우를
+  확인했다.
+- 부수 수정: `.env.example`, BentoML `Dockerfile`·`service.py` 기본 모델 이름,
+  `bootstrap_ec2.sh` 안내 문구, CLAUDE.md 실행 방법.
+- 로컬의 기존 HDFS Triton 레포를 `serving/triton/models/hdfs/`로 옮겼다(저장소
+  밖 산출물, 재생성 가능).
+
+**HDFS 결과에 미치는 영향 없음**: 모델 가중치·전처리·응답 스키마·측정 조건은
+그대로이고, 바뀐 건 모델을 찾는 경로와 이름뿐이다. HDFS를 재측정하지 않는다는
+10-13 결정도 그대로 유지한다.
+
+**아직 확인하지 못한 것**: 서빙 설정을 바꿨지만 CLAUDE.md 검증 절차대로 세
+프레임워크를 실제로 띄워 보지는 못했다. 로컬 GPU 메모리가 2GB라 학습 중 서빙
+컨테이너를 올리면 학습이 중단될 수 있어서다. 학습이 끝난 뒤 로컬 검증 단계에서
+HDFS·BGL 둘 다 확인한다. 이때 로컬 BentoML 저장소(docker 볼륨 `bentoml_home`)의
+HDFS 모델은 옛 이름(`deeplog`)이라 `save_model.py --dataset hdfs`로 다시 등록해야
+한다. EC2는 부트스트랩이 새 이름으로 등록하므로 따로 할 일이 없다.
 
 ---
 
@@ -436,6 +509,7 @@ GET  /health   (BentoML만 POST — 아래 버그 3번 참고)
 |---|---|---|---|
 | 역할 | 베이스라인 — 순수 PyTorch, 프레임워크 오버헤드 없음 | 범용 ML 서빙 — 모델 스토어, 자동 스키마 문서화, 리소스/타임아웃 선언 | GPU 고성능 서빙 — C++ 런타임, dynamic batching |
 | 모델 로드 | `torch.load(deeplog_best.pt)`, lifespan에서 1회 | BentoML model store에서 `bentoml.pytorch.load_model()` | `deeplog.ts`(TorchScript, script 방식)를 Triton 서버가 로드, 래퍼는 HTTP 클라이언트로 위임 |
+| 데이터셋 선택 (2026-10-31~) | `model/checkpoints/<dataset>/` | 모델 이름 `deeplog-<dataset>` | 레포 `serving/triton/models/<dataset>/` 마운트 — 셋 다 `DEEPLOG_DATASET` 하나로 결정 |
 | 전처리(one-hot) | 서버 프로세스 내(PyTorch) | 서버 프로세스 내(PyTorch) | **래퍼**가 numpy로 수행 후 Triton에 전달 |
 | 동시성 제어 | 없음(uvicorn 기본) | `traffic.timeout=10s` 선언 | `max_batch_size=64`, `dynamic_batching`(preferred batch 8/16/32/64, max_queue_delay=100us) |
 | 리소스 선언 | 없음 | `resources.memory=1Gi` | `instance_group: KIND_GPU, count=1`, docker-compose `gpus: all` |
@@ -599,6 +673,10 @@ JSON 스키마는 변경 없음.
 - **컨테이너 생명주기**: 프레임워크 1개씩 `docker compose up` → 헬스체크
   대기(Triton은 서버 ready 확인 후 wrapper 기동) → 벤치마크 → `stop`+`rm`
   → 다음 프레임워크. 세 프레임워크를 동시에 띄우지 않음(CLAUDE.md 규칙).
+- **서빙 데이터셋 검증**(2026-10-31 추가): 데이터셋마다 `DEEPLOG_DATASET`을
+  export해 세 프레임워크가 같은 데이터셋 모델을 띄우게 하고, 헬스체크 직후
+  `/health`의 `dataset`이 기대값과 다르면 측정 없이 전체를 중단한다. 확인된 값은
+  manifest에 `served_dataset=`으로 기록(§스코프 이력 2026-10-31).
 - **자원 사용률 로깅**: `--container <docker container id>`(docker stats
   기반 CPU%·메모리) + `--monitor-gpu`(nvidia-smi 기반 GPU 사용률·메모리)를
   latency 측정과 동일한 `time.time()` 타임스탬프로 백그라운드 샘플링(기본
@@ -743,20 +821,25 @@ FastAPI·BentoML은 cycle1~5(n=5, 8/5 측정), **Triton은 cycle4~8(n=5, 전부
 
 ## 9. 다음 단계 — BGL 라운드
 
-HDFS 결과는 확정됐고(§8) 열린 코드 이슈는 없다. BGL 라운드 스코프는
-2026-10-13에 확정됐다(§스코프 이력 2026-10-13). 진행 순서:
+HDFS 결과는 확정됐다(§8). BGL 라운드 스코프는 2026-10-13에 확정됐고, 학습은
+2026-10-31에 시작했다(§스코프 이력 10-13, 10-31). 열린 항목은 서빙 스택 변경의
+실제 기동 검증 하나다(4번에서 처리). 진행 순서:
 
 1. ~~이상 판정 기준 결정~~ — 완료. HDFS와 같은 g=9(§스코프 이력 2026-10-13).
-2. **학습** — `python model/train.py --dataset bgl`. 하이퍼파라미터와 g 모두
-   기본값 그대로(= HDFS와 동일). 학습 데이터가 HDFS보다 커서 로컬이 느리면
-   EC2에서 학습해도 된다.
+2. **학습** — ⏳ 진행 중. `python model/train.py --dataset bgl`, 하이퍼파라미터와
+   g 모두 기본값(= HDFS와 동일). 로컬 GPU, 30에폭 약 7시간 예상.
 3. **서빙 패키징** — `serving/bentoml/save_model.py`와
-   `serving/triton/setup_model.py`를 `--dataset bgl`로 실행.
-4. **로컬 검증** — CLAUDE.md 검증 절차(세 프레임워크 `/health` + 동일 입력
-   `/predict` 스키마·값 대조)와 짧은 벤치마크 드라이런. 드라이런 결과는
-   `experiments/results/`에 저장하지 않는다.
+   `serving/triton/setup_model.py`를 `--dataset bgl`로 실행. 결과는 데이터셋별로
+   분리 저장된다(BentoML `deeplog-bgl`, Triton `serving/triton/models/bgl/`).
+4. **로컬 검증** — 10-31 서빙 변경의 기동 검증을 겸한다. 로컬 BentoML 저장소에
+   HDFS를 `save_model.py --dataset hdfs`로 새 이름으로 다시 등록한 뒤,
+   `DEEPLOG_DATASET=hdfs`와 `bgl` 각각으로 세 프레임워크를 띄워 CLAUDE.md 검증
+   절차(`/health`의 `dataset` 값 확인 + 동일 입력 `/predict` 스키마·값 대조)를
+   돌린다. 이어서 짧은 벤치마크 드라이런으로 서빙 데이터셋 검증 장치가 통과하는지
+   본다. 드라이런 결과는 `experiments/results/`에 저장하지 않는다.
 5. **EC2 공식 측정** — 데이터·체크포인트를 S3에 올리고 §6.3 절차로 기동,
    `bash experiments/run_benchmark.sh bgl`(옵션 없이 = HDFS와 같은 조건).
+   `run_manifest_*.txt`에 프레임워크별 `served_dataset=bgl`이 찍혔는지 확인한다.
    스팟이면 `spot_backup_watcher.sh`도 함께 띄운다. 끝나면 결과 회수 후
    인스턴스 terminate.
 6. **분석** — `plot_results.py`·`stat_test.py --dataset bgl`로 그림과

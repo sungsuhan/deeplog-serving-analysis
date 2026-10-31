@@ -119,8 +119,13 @@ cp .env.example .env
 docker compose -f docker/docker-compose.yml up
 
 # 벤치마크 실행
-bash experiments/run_benchmark.sh
+bash experiments/run_benchmark.sh <hdfs|bgl>
 ```
+
+서빙 컨테이너가 띄울 데이터셋은 `DEEPLOG_DATASET`(기본 `hdfs`) 하나로 세 프레임워크가
+함께 바뀐다(예: `DEEPLOG_DATASET=bgl docker compose -f docker/docker-compose.yml up fastapi`).
+`run_benchmark.sh`는 이 값을 스스로 export하고, 측정 직전 각 서버 `/health`의
+`dataset`이 기대값과 다르면 측정 없이 중단한다.
 
 ---
 

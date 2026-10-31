@@ -4,8 +4,8 @@ Prepare the Triton model repository from a trained DeepLog checkpoint.
 Run ONCE after training, before starting Triton:
   python serving/triton/setup_model.py --dataset hdfs
 
-Creates:
-  serving/triton/models/deeplog/
+Creates (데이터셋별로 분리 — docker-compose가 DEEPLOG_DATASET로 골라 마운트):
+  serving/triton/models/<dataset>/deeplog/
     config.pbtxt          (generated with actual dims)
     1/
       model.pt          (TorchScript model copied from checkpoints)
@@ -58,14 +58,15 @@ def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument("--dataset",       choices=["hdfs", "bgl"], required=True)
   parser.add_argument("--ckpt-dir",      type=Path, default=None)
-  parser.add_argument("--model-repo",    type=Path,
-                      default=Path(__file__).parent / "models")
+  parser.add_argument("--model-repo",    type=Path, default=None,
+                      help="기본값: serving/triton/models/<dataset>")
   parser.add_argument("--max-batch-size", type=int, default=64)
   args = parser.parse_args()
 
   ckpt_dir = args.ckpt_dir or (
     _PROJECT_ROOT / "model" / "checkpoints" / args.dataset
   )
+  args.model_repo = args.model_repo or (Path(__file__).parent / "models" / args.dataset)
   ts_path     = ckpt_dir / "deeplog.ts"
   config_path = ckpt_dir / "config.json"
 
@@ -105,7 +106,7 @@ def main() -> None:
   )
   print(f"[OK] config.json  -> {args.model_repo / 'deeplog' / 'config.json'}")
   print(f"\nTriton model repository ready: {args.model_repo}")
-  print("  Start Triton:  docker compose up triton")
+  print(f"  Start Triton:  DEEPLOG_DATASET={args.dataset} docker compose up triton")
 
 
 if __name__ == "__main__":

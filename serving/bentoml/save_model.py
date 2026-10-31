@@ -4,7 +4,9 @@ Register trained DeepLog weights in the BentoML model store.
 Run ONCE after training, before starting the BentoML service:
   python serving/bentoml/save_model.py --dataset hdfs
 
-The model tag printed at the end is loaded by service.py at startup.
+The model is registered as "deeplog-<dataset>" so HDFS and BGL coexist in the
+store; service.py picks one via BENTOML_MODEL_NAME (docker-compose sets it from
+DEEPLOG_DATASET).
 """
 
 import argparse
@@ -25,10 +27,11 @@ def main() -> None:
   parser.add_argument("--dataset",  choices=["hdfs", "bgl"], required=True)
   parser.add_argument("--ckpt-dir", type=Path, default=None,
                       help="Override checkpoint directory path")
-  parser.add_argument("--model-name", default="deeplog",
-                      help="Name to register in BentoML store (default: deeplog)")
+  parser.add_argument("--model-name", default=None,
+                      help="Name to register in BentoML store (default: deeplog-<dataset>)")
   args = parser.parse_args()
 
+  args.model_name = args.model_name or f"deeplog-{args.dataset}"
   ckpt_dir = args.ckpt_dir or (
     _PROJECT_ROOT / "model" / "checkpoints" / args.dataset
   )

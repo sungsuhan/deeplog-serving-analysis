@@ -16,7 +16,7 @@ BentoML v1.x 서빙 — DeepLog 이상탐지.
    또는 docker compose up bentoml                        (컨테이너)
 
 환경변수:
-  BENTOML_MODEL_NAME   모델 이름 (기본값: deeplog)
+  BENTOML_MODEL_NAME   모델 이름 (기본값: deeplog-hdfs — save_model.py가 deeplog-<dataset>으로 등록)
   BENTOML_MODEL_TAG    버전 태그  (기본값: latest)
 """
 
@@ -69,7 +69,7 @@ class DeepLogService:
   """
 
   def __init__(self) -> None:
-    model_name = os.getenv("BENTOML_MODEL_NAME", "deeplog")
+    model_name = os.getenv("BENTOML_MODEL_NAME", "deeplog-hdfs")
     model_tag  = os.getenv("BENTOML_MODEL_TAG",  "latest")
 
     # BentoML store에서 모델 참조 → 메타데이터(config)도 함께 로드

@@ -10,10 +10,16 @@
 #   - 5회 반복 측정 (CYCLES=5) — n=3에서는 Mann-Whitney U(양측)의 최소 도달
 #     가능 p-value가 약 0.1이라 유의수준 0.05에 도달할 수 없다(stat_test.py 참고).
 #
-# Prerequisites:
-#   1. python model/train.py --dataset hdfs   (BGL도 비교하려면 --dataset bgl 추가)
-#   2. python serving/bentoml/save_model.py --dataset hdfs
-#   3. python serving/triton/setup_model.py --dataset hdfs
+# Prerequisites (측정할 데이터셋마다):
+#   1. python model/train.py --dataset <ds>
+#   2. python serving/bentoml/save_model.py --dataset <ds>   → BentoML 모델 deeplog-<ds>
+#   3. python serving/triton/setup_model.py --dataset <ds>   → serving/triton/models/<ds>/
+#
+# 데이터셋 선택: 이 스크립트가 데이터셋마다 DEEPLOG_DATASET을 export해
+# docker-compose가 세 프레임워크 모두 그 데이터셋 모델을 띄우게 한다. 그리고
+# 측정 직전에 각 서버 /health의 dataset 필드가 기대값과 같은지 확인해, 다르면
+# 측정 없이 즉시 중단한다 — 다른 모델을 서빙하는 상태로 측정이 조용히 진행되는
+# 것을 막기 위함(2026-10-31 추가).
 #   4. docker compose -f docker/docker-compose.yml build
 #      (컨테이너는 이 스크립트가 프레임워크별로 개별 기동/종료하므로 미리
 #       `docker compose up`으로 전체를 띄워두지 않는다 — 동시 실행 규칙 위반)
@@ -105,6 +111,19 @@ wait_for_triton_ready() {
   echo "  triton 서버 ready (${waited}s)"
 }
 
+# 서버가 실제로 서빙 중인 데이터셋을 /health 응답에서 읽는다(세 프레임워크 공통
+# 필드). BentoML은 wait_for_health와 같은 이유로 POST.
+served_dataset() {
+  local url="$1" label="$2"
+  local curl_opts=(-sf --max-time 5)
+  if [[ "$label" == "bentoml" ]]; then
+    curl_opts+=(-X POST -d '{}')
+  fi
+  local body
+  body="$(curl "${curl_opts[@]}" "$url/health")"
+  $PYTHON -c 'import json,sys; print(json.loads(sys.argv[1]).get("dataset"))' "$body"
+}
+
 # ── 프레임워크 1개 기동 → 측정 → 종료 ────────────────────────────────────────
 run_framework() {
   local framework="$1" dataset="$2" cycle="$3"
@@ -142,6 +161,17 @@ run_framework() {
     return 0
   fi
 
+  local served
+  served="$(served_dataset "$endpoint" "$framework" || true)"
+  if [[ "$served" != "$dataset" ]]; then
+    echo "[ABORT] $framework 서버가 '$served' 모델을 서빙 중 (기대값: $dataset)."
+    echo "        save_model.py / setup_model.py를 --dataset $dataset로 실행했는지 확인하세요."
+    compose_down "${services[@]}"
+    exit 1
+  fi
+  echo "  $framework 서빙 데이터셋 확인: $served"
+  echo "cycle=$cycle framework=$framework served_dataset=$served" >> "$MANIFEST"
+
   $PYTHON experiments/benchmark.py \
     --framework   "$framework" \
     --endpoint    "$endpoint" \
@@ -159,6 +189,7 @@ run_framework() {
 # ── 순서 랜덤화 + 사이클 반복 ─────────────────────────────────────────────────
 run_dataset() {
   local dataset="$1"
+  export DEEPLOG_DATASET="$dataset"
   for cycle in $(seq "$CYCLE_START" "$CYCLES"); do
     local order
     order=($(shuf -e "${FRAMEWORKS[@]}"))

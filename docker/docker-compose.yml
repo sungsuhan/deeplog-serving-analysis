@@ -26,6 +26,13 @@ services:
       retries: 5
 
   # ── ML 서빙 스택 ──────────────────────────────────────────────────────────────
+  # 서빙할 데이터셋은 DEEPLOG_DATASET(hdfs|bgl, 기본 hdfs) 하나로 세 프레임워크가
+  # 동시에 바뀐다 — FastAPI는 체크포인트 디렉토리, BentoML은 모델 이름
+  # (deeplog-<dataset>), Triton은 모델 레포지토리(serving/triton/models/<dataset>).
+  # run_benchmark.sh가 데이터셋마다 이 변수를 export한 뒤 컨테이너를 띄운다.
+  # 데이터셋별로 저장 위치를 나눈 이유: 예전엔 셋 다 "모델 하나"를 전제해, 두
+  # 데이터셋을 등록하면 나중 것이 덮어써 프레임워크마다 다른 모델을 서빙할 수
+  # 있었다(2026-10-31, EXPERIMENT.md 스코프 이력 참고).
   fastapi:
     build:
       context: ..
@@ -35,8 +42,8 @@ services:
     volumes:
       - ../model/checkpoints:/workspace/model/checkpoints:ro
     environment:
-      - DATASET=hdfs
-      - CKPT_DIR=/workspace/model/checkpoints/hdfs
+      - DATASET=${DEEPLOG_DATASET:-hdfs}
+      - CKPT_DIR=/workspace/model/checkpoints/${DEEPLOG_DATASET:-hdfs}
     # Triton과 동일하게 GPU로 추론하도록 (requirements.txt의 CUDA torch와 세트).
     # 이거 없이 CUDA torch만 설치하면 컨테이너 안에서 GPU가 안 보여
     # torch.cuda.is_available()이 여전히 False가 된다.
@@ -52,14 +59,14 @@ services:
       - bentoml_home:/root/bentoml
       - ../model/checkpoints:/workspace/model/checkpoints:ro
     environment:
-      - BENTOML_MODEL_NAME=deeplog
+      - BENTOML_MODEL_NAME=deeplog-${DEEPLOG_DATASET:-hdfs}
       - BENTOML_MODEL_TAG=latest
     gpus: all
 
   triton:
     image: nvcr.io/nvidia/tritonserver:24.08-py3
     volumes:
-      - ../serving/triton/models:/models
+      - ../serving/triton/models/${DEEPLOG_DATASET:-hdfs}:/models
     ports:
       - "8001:8001"
     # Triton 기본 포트는 HTTP=8000/GRPC=8001/Metrics=8002이지만, 이 프로젝트는
@@ -82,7 +89,7 @@ services:
     ports:
       - "8002:8002"
     volumes:
-      - ../serving/triton/models:/workspace/serving/triton/models:ro
+      - ../serving/triton/models/${DEEPLOG_DATASET:-hdfs}:/workspace/serving/triton/models:ro
     environment:
       - TRITON_URL=triton:8001
       - MODEL_NAME=deeplog

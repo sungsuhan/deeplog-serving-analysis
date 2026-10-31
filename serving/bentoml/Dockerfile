@@ -15,7 +15,7 @@ COPY serving/bentoml/save_model.py ./serving/bentoml/save_model.py
 COPY serving/bentoml/__init__.py   ./serving/bentoml/__init__.py
 
 ENV PYTHONPATH=/workspace
-ENV BENTOML_MODEL_NAME=deeplog
+ENV BENTOML_MODEL_NAME=deeplog-hdfs
 ENV BENTOML_MODEL_TAG=latest
 
 # BentoML store is mounted at runtime via docker-compose volume:
