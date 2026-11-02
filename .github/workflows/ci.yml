@@ -1,0 +1,95 @@
+# CI — 저장소 품질 자동 검사 (CLAUDE.md §현재 스코프 "병행 항목: CI/CD").
+#
+# 이 워크플로는 벤치마크를 돌리지 않고 성능 수치를 만들지 않는다. GitHub 러너에는
+# GPU가 없고, 공식 측정은 EC2 g4dn.xlarge에서만 한다(CLAUDE.md 핵심 규칙).
+# 실제 데이터·체크포인트도 저장소에 없으므로 소형 합성 데이터로 코드 경로만 검사한다.
+#
+#   static  — 파이썬 문법, 셸 스크립트 문법, docker-compose 데이터셋 전환 검사
+#   smoke   — 합성 데이터 학습 → 패키징 → 세 프레임워크 기동 → 응답 스키마·값 일치
+#   images  — 서빙 이미지 3종 빌드 (푸시는 하지 않음 — CD 단계에서 추가 예정)
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Python 문법
+        run: python -m py_compile $(git ls-files '*.py')
+
+      - name: 셸 스크립트 문법
+        run: |
+          for f in $(git ls-files '*.sh'); do
+            bash -n "$f" && echo "ok  $f"
+          done
+
+      - name: docker-compose 데이터셋 전환 (DEEPLOG_DATASET)
+        run: python ci/check_compose.py
+
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: static
+    env:
+      CI_ROOT: ${{ runner.temp }}/deeplog-ci
+    steps:
+      - uses: actions/checkout@v4
+
+      # Triton 서버 이미지가 압축 해제 후 15GB 안팎이라 기본 디스크로는 빠듯하다.
+      # 이 작업에 쓰지 않는 사전 설치 도구를 지워 공간을 확보한다.
+      - name: 디스크 공간 확보
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ci/requirements.txt
+
+      - name: 의존성 설치 (torch는 CPU 빌드)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.4.1
+          pip install -r ci/requirements.txt
+
+      - name: Triton 서버 이미지 받기
+        run: docker pull nvcr.io/nvidia/tritonserver:24.08-py3
+
+      - name: 스모크 검사
+        run: bash ci/smoke.sh
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: static
+    steps:
+      - uses: actions/checkout@v4
+
+      # fastapi·bentoml 이미지는 CUDA 빌드 torch를 포함해 각각 수 GB다.
+      - name: 디스크 공간 확보
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: 서빙 이미지 빌드 (fastapi, bentoml, triton-wrapper)
+        run: docker compose -f docker/docker-compose.yml build fastapi bentoml triton-wrapper

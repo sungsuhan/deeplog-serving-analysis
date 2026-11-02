@@ -47,7 +47,7 @@ dynamic_batching {{
 
 instance_group [
   {{
-  kind: KIND_GPU
+  kind: {instance_kind}
   count: 1
   }}
 ]
@@ -61,6 +61,10 @@ def main() -> None:
   parser.add_argument("--model-repo",    type=Path, default=None,
                       help="기본값: serving/triton/models/<dataset>")
   parser.add_argument("--max-batch-size", type=int, default=64)
+  # 실험은 항상 기본값 KIND_GPU로 돌린다. KIND_CPU는 GPU가 없는 CI 러너에서
+  # 세 프레임워크 응답 일치를 검사할 때만 쓰는 옵션이다(성능 측정용 아님).
+  parser.add_argument("--instance-kind", choices=["KIND_GPU", "KIND_CPU"],
+                      default="KIND_GPU")
   args = parser.parse_args()
 
   ckpt_dir = args.ckpt_dir or (
@@ -95,6 +99,7 @@ def main() -> None:
     max_batch_size = args.max_batch_size,
     seq_len        = seq_len,
     num_classes    = num_classes,
+    instance_kind  = args.instance_kind,
   )
   pbtxt_path = args.model_repo / "deeplog" / "config.pbtxt"
   pbtxt_path.write_text(pbtxt)

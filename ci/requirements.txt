@@ -1,0 +1,15 @@
+# CI(GitHub Actions) 전용 의존성. GPU 없는 러너에서 세 서빙 앱을 컨테이너 없이
+# 호스트 Python으로 띄우기 위한 것이다.
+#
+# 버전은 serving/*/requirements.txt·model/requirements.txt와 같게 맞춘다. 다른 점은
+# torch 하나 — 서빙 이미지는 CUDA 12.1 빌드(torch==2.4.1+cu121)를 쓰지만, CI는 GPU가
+# 없으므로 같은 버전의 CPU 빌드를 별도로 설치한다(용량 약 200MB vs 2GB 이상):
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.4.1
+#   pip install -r ci/requirements.txt
+
+numpy==1.26.4
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+bentoml==1.3.9
+tritonclient[http]==2.49.0
