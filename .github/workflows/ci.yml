@@ -33,14 +33,24 @@ jobs:
         with:
           python-version: "3.11"
 
+      # YAML 문법만으로는 못 잡는 워크플로 오류(허용되지 않는 컨텍스트 등)를 잡는다.
+      # 다만 워크플로 자체가 무효면 이 단계도 돌지 못하므로, ci.yml을 고칠 때는
+      # 로컬에서도 actionlint를 돌린다.
+      - name: 워크플로 검사 (actionlint)
+        run: |
+          pip install actionlint-py==1.7.7.23
+          actionlint -shellcheck=   # run: 셸 스타일 검사는 하지 않는다(문법은 다음 단계들이 본다)
+
       - name: Python 문법
         run: python -m py_compile $(git ls-files '*.py')
 
       - name: 셸 스크립트 문법
         run: |
+          rc=0
           for f in $(git ls-files '*.sh'); do
-            bash -n "$f" && echo "ok  $f"
+            if bash -n "$f"; then echo "ok  $f"; else echo "FAIL $f"; rc=1; fi
           done
+          exit $rc
 
       - name: docker-compose 데이터셋 전환 (DEEPLOG_DATASET)
         run: python ci/check_compose.py
@@ -49,8 +59,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     needs: static
-    env:
-      CI_ROOT: ${{ runner.temp }}/deeplog-ci
     steps:
       - uses: actions/checkout@v4
 
@@ -75,7 +83,11 @@ jobs:
       - name: Triton 서버 이미지 받기
         run: docker pull nvcr.io/nvidia/tritonserver:24.08-py3
 
+      # runner 컨텍스트는 job 수준 env에서 쓸 수 없어(워크플로 전체가 무효 처리됨)
+      # step 수준에서 지정한다.
       - name: 스모크 검사
+        env:
+          CI_ROOT: ${{ runner.temp }}/deeplog-ci
         run: bash ci/smoke.sh
 
   images:
