@@ -6,7 +6,11 @@
 #
 #   static  — 파이썬 문법, 셸 스크립트 문법, docker-compose 데이터셋 전환 검사
 #   smoke   — 합성 데이터 학습 → 패키징 → 세 프레임워크 기동 → 응답 스키마·값 일치
-#   images  — 서빙 이미지 3종 빌드 (푸시는 하지 않음 — CD 단계에서 추가 예정)
+#   images  — 서빙 이미지 3종 빌드 (PR·푸시 모두, 레지스트리에는 올리지 않음)
+#   publish — main 푸시에서 앞의 세 작업이 모두 통과했을 때만 서빙 이미지 3종을
+#             GitHub Container Registry(ghcr.io)에 올린다(CD). 이미지에는 코드와
+#             의존성만 들어가고 모델 가중치·데이터·.env는 들어가지 않는다(Dockerfile이
+#             파일을 하나씩 COPY한다). 가중치는 지금처럼 실행 시 마운트한다.
 #
 # 러너는 ubuntu-latest 대신 버전을 고정한다 — latest가 새 OS로 넘어가면 코드 변경
 # 없이도 CI 결과가 달라질 수 있다. 올릴 때는 의도적으로 바꾸고 결과를 확인한다.
@@ -108,3 +112,42 @@ jobs:
 
       - name: 서빙 이미지 빌드 (fastapi, bentoml, triton-wrapper)
         run: docker compose -f docker/docker-compose.yml build fastapi bentoml triton-wrapper
+
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: [static, smoke, images]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 디스크 공간 확보
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: ghcr.io 로그인
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # 태그: 커밋 SHA(어떤 코드로 만든 이미지인지 추적 — 실험에는 이 태그를 쓴다)와
+      # latest(가장 최근 main). 이미지 이름은 deeplog-<프레임워크>.
+      - name: 서빙 이미지 빌드·푸시 (fastapi, bentoml, triton-wrapper)
+        run: |
+          set -euo pipefail
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          for fw in fastapi bentoml triton; do
+            name="deeplog-$fw"
+            [[ "$fw" == triton ]] && name="deeplog-triton-wrapper"
+            img="ghcr.io/$owner/$name"
+            docker build -f "serving/$fw/Dockerfile" \
+              --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+              --label "org.opencontainers.image.revision=${{ github.sha }}" \
+              -t "$img:${{ github.sha }}" -t "$img:latest" .
+            docker push "$img:${{ github.sha }}"
+            docker push "$img:latest"
+            docker image rm "$img:${{ github.sha }}" "$img:latest"   # 다음 이미지 빌드용 디스크 확보
+            echo "pushed $img:${{ github.sha }}"
+          done
