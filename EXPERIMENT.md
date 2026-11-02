@@ -6,8 +6,9 @@
 > (FastAPI/BentoML/Triton 모두 n=5, 27건 중 25건 p<0.05 — §8), 현재 졸업논문
 > BGL 라운드 진행 중이다. 이번 갱신 내용: CI/CD를 범위 밖에서 병행 항목으로
 > 올리고 두 단계를 모두 마쳤다 — 자동 검사(CI, GitHub Actions)와 서빙 이미지의
-> GitHub Container Registry 푸시(CD)(§스코프 이력 2026-11-02). 실험 변수·측정
-> 조건은 바뀌지 않았고, HDFS 측정값과 결론(§8)도 그대로다.**
+> GitHub Container Registry 푸시(CD)(§스코프 이력 2026-11-02). 그리고 BGL
+> 학습이 끝났다(30에폭, best val_loss 0.1406 — §3). 실험 변수·측정 조건은
+> 바뀌지 않았고, HDFS 측정값과 결론(§8)도 그대로다.**
 > 코드가 바뀌면 이 문서도 다시 생성해야 합니다 — 특히 하이퍼파라미터·설정값은
 > 아래 표만 믿지 말고 실제 config 파일과 대조하세요.
 
@@ -28,9 +29,9 @@
 | 9. 결과 보관 | ✅ 완료 (2026-09-12) | 결과 CSV·그림을 `.gitignore`에서 빼 저장소에 포함 — §스코프 이력 2026-09-12 |
 | 10. BGL 라운드 스코프 확정 | ✅ 완료 (2026-10-13) | §스코프 이력 2026-10-13 |
 | 11. BGL 이상 판정 기준(`num_candidates`) 결정 | ✅ 완료 (2026-10-13, g=9) | §스코프 이력 2026-10-13 |
-| 12. BGL 학습 | ⏳ 진행 중 (2026-10-31 재시작, 로컬 GPU, 이어 학습 방식으로 30에폭 약 7시간을 나눠 진행. 2026-11-02 기준 19/30에폭, val_loss 0.1411) | §스코프 이력 2026-10-31 |
+| 12. BGL 학습 | ✅ 완료 (2026-11-02 18:15, 30에폭, best epoch 30, val_loss 0.1406, 로컬 GPU 이어 학습) | §3, §스코프 이력 2026-10-31 |
 | 12-1. 서빙 스택 데이터셋 분리 + 서빙 데이터셋 검증 장치 | ✅ 코드 수정 완료 / ⬜ 실제 기동 검증 대기 | §스코프 이력 2026-10-31 |
-| 12-2. BGL 서빙 패키징·로컬 검증 | ⬜ 대기 (학습 완료 후) | §9 |
+| 12-2. BGL 서빙 패키징·로컬 검증 | ⬜ 다음 착수 | §9 |
 | 13. BGL EC2 벤치마크·분석 | ⬜ 대기 | §9 |
 | 병행 A. CI — 자동 검사 (GitHub Actions) | ✅ 완료 (2026-11-02, GitHub에서 static·smoke·images 통과, Triton 포함 세 프레임워크 응답 일치) | §스코프 이력 2026-11-02 |
 | 병행 B. CD — 서빙 이미지 레지스트리 푸시 | ✅ 완료 (2026-11-02, ghcr.io 공개 이미지 3종. 실험 절차에서 이 이미지를 쓸지는 미결정) | §스코프 이력 2026-11-02 |
@@ -393,6 +394,10 @@ CPU 기준 비트 단위 동일을 확인했다. GPU에서는 cuDNN LSTM 연산 
 이후 BGL 학습을 이 방식으로 처음부터 다시 시작했다. 노트북을 끌 때는 그냥 끄고,
 다시 켜면 `python model/train.py --dataset bgl --resume`으로 이어 간다.
 
+**결과**: 2026-11-02 18:15에 30에폭을 마쳤다. 중간에 절전으로 한 번 멈췄다가 깨어나
+이어졌고(4에폭 기록 시간 150,272초는 대부분 절전 시간), 그 밖의 중단 없이 끝났다.
+결과 수치는 §3 참고.
+
 ### 2026-11-02 — CI/CD를 범위 밖에서 병행 항목으로 변경, 자동 검사 구축
 
 **결정**: 10-13에 범위 밖으로 둔 CI/CD를 BGL 라운드와 병행하는 항목으로 올렸다.
@@ -600,11 +605,13 @@ EC2에서 이 이미지를 받아 쓰도록 바꾸는 것은 측정 절차 변�
 
 ---
 
-## 3. 모델 — DeepLog (`model/deeplog.py`, `model/train.py`) — **HDFS 학습 완료**
+## 3. 모델 — DeepLog (`model/deeplog.py`, `model/train.py`) — **HDFS·BGL 학습 완료**
 
 - **구조**: 2-layer LSTM → Linear. 입력은 로그 키 시퀀스의 one-hot 인코딩
   `(batch, window_size-1, num_classes)`, 출력은 다음 로그 키에 대한 클래스 로짓
   `(batch, num_classes)`. 임베딩 레이어 없음(원 논문 방식, vocab이 작아 one-hot으로 충분).
+  BGL은 vocab이 991로 커서 one-hot 입력이 넓어지지만, 두 데이터셋을 같은 표에서
+  비교하기 위해 구조를 바꾸지 않았다(§스코프 이력 2026-10-13).
 - **학습**: 정상 세션/윈도우만으로 비지도 학습(다음 로그 키 예측, CrossEntropyLoss).
   val_loss 기준 best checkpoint 저장.
 - **배치 처리 — DataLoader를 쓰지 않는다**: 원래는 `torch.utils.data.DataLoader`
@@ -645,6 +652,26 @@ EC2에서 이 이미지를 받아 쓰도록 바꾸는 것은 측정 절차 변�
   - `deeplog.ts` — TorchScript. **`torch.jit.trace`가 아니라 `torch.jit.script`
     로 export**(§3.1 참고 — Triton 검증 중 trace 방식의 문제를 발견해 전환함)
   - `config.json` — 세 서빙 스택이 공유하는 하이퍼파라미터
+- **학습 결과 (BGL, 2026-11-02 완료)**:
+  - 하이퍼파라미터는 위 표 그대로(HDFS와 동일). `config.json` 기준 input_size·
+    num_classes = 991(vocab), hidden 64, 2층, window 10, num_candidates 9.
+    파라미터 수 368,287(HDFS 59,485 — 차이는 전부 vocab 폭).
+  - 데이터: 정상 시퀀스 4,323,231개(train 3,890,908 / val 432,323).
+  - Best epoch: **30**, val_loss **0.1406**(train_loss 0.1318). 26~29에폭은
+    0.1406~0.1410 사이로 개선이 없어 사실상 수렴. 하이퍼파라미터를 HDFS와 같게
+    두기로 했으므로 조기 종료 없이 30에폭을 채웠다.
+  - val_loss는 데이터셋 간 비교 대상이 아니다 — vocab 크기가 달라 손실의 스케일이
+    다르고, 탐지 성능도 논문의 비교 대상이 아니다(§스코프 이력 2026-10-13).
+  - 학습 시간: 로컬 GPU(MX450), 에폭당 약 14~26분, 절전으로 멈춘 4에폭을 뺀
+    29에폭 합계 약 8시간 51분. HDFS와 달리 GPU를 쓴 이유는 §스코프 이력 10-31.
+    학습 위치는 서빙 성능 측정과 무관하다.
+  - 재현 시드: 데이터 분할·셔플에 더해 모델 초기 가중치에도 `manual_seed(42)`
+    (10-31 추가). 단 GPU(cuDNN LSTM) 학습이라 비트 단위 재현은 보장되지 않는다.
+  - 이어 학습 방식으로 진행(§스코프 이력 10-31). 학습 중 절전으로 한 번 멈췄다
+    깨어나 이어졌다.
+- **산출물** (`model/checkpoints/bgl/`, 존재함, 저장소에는 없음): `deeplog_best.pt`,
+  `deeplog.ts`, `config.json`(HDFS와 같은 형식). 이어 학습용 `train_state.pt`·
+  `best_in_progress.pt`도 남아 있으나 서빙에는 쓰지 않는다.
 
 ### 3.1 trace → script 전환 이유 (2026-07-29, Triton 로컬 검증 중 발견)
 
@@ -993,10 +1020,7 @@ HDFS 결과는 확정됐다(§8). BGL 라운드 스코프는 2026-10-13에 확�
 실제 기동 검증 하나다(4번에서 처리). 진행 순서:
 
 1. ~~이상 판정 기준 결정~~ — 완료. HDFS와 같은 g=9(§스코프 이력 2026-10-13).
-2. **학습** — ⏳ 진행 중. `python model/train.py --dataset bgl`, 하이퍼파라미터와
-   g 모두 기본값(= HDFS와 동일). 로컬 GPU, 30에폭 약 7시간. 중단되면
-   `python model/train.py --dataset bgl --resume`으로 이어 간다. 30에폭이 끝나
-   `model/checkpoints/bgl/`에 `config.json`이 생기면 완료다.
+2. ~~학습~~ — 완료(2026-11-02). 30에폭, best val_loss 0.1406(§3).
 3. **서빙 패키징** — `serving/bentoml/save_model.py`와
    `serving/triton/setup_model.py`를 `--dataset bgl`로 실행. 결과는 데이터셋별로
    분리 저장된다(BentoML `deeplog-bgl`, Triton `serving/triton/models/bgl/`).
