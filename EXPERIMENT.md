@@ -2,12 +2,13 @@
 
 > 이 문서는 **코드 없이 논문을 쓰는 사람(채팅 Claude/ChatGPT 등)을 위한 스냅샷**입니다.
 > 소스는 항상 코드이고, 이 문서는 특정 시점의 재생성 가능한 요약본입니다.
-> **마지막 갱신: 2026-11-02. 기말(2026-08-11) 발표 라운드는 HDFS만으로 종료됐고
+> **마지막 갱신: 2026-11-04. 기말(2026-08-11) 발표 라운드는 HDFS만으로 종료됐고
 > (FastAPI/BentoML/Triton 모두 n=5, 27건 중 25건 p<0.05 — §8), 현재 졸업논문
-> BGL 라운드 진행 중이다. 이번 갱신 내용: CI/CD를 범위 밖에서 병행 항목으로
-> 올리고 두 단계를 모두 마쳤다 — 자동 검사(CI, GitHub Actions)와 서빙 이미지의
-> GitHub Container Registry 푸시(CD)(§스코프 이력 2026-11-02). 그리고 BGL
-> 학습이 끝났다(30에폭, best val_loss 0.1406 — §3). 실험 변수·측정 조건은
+> BGL 라운드 진행 중이다. 이번 갱신 내용: BGL 서빙 패키징과 로컬 검증을 마쳐
+> EC2 공식 측정만 남았다 — 실제 체크포인트로 HDFS·BGL 모두 세 프레임워크 응답이
+> 일치했고, 10-31 서빙 변경이 실제 컨테이너에서 동작함을 확인했다(§스코프 이력
+> 2026-11-04). 그 전 갱신(11-02): CI/CD 구축(자동 검사 + ghcr.io 이미지 푸시),
+> BGL 학습 완료(30에폭, best val_loss 0.1406 — §3). 실험 변수·측정 조건은
 > 바뀌지 않았고, HDFS 측정값과 결론(§8)도 그대로다.**
 > 코드가 바뀌면 이 문서도 다시 생성해야 합니다 — 특히 하이퍼파라미터·설정값은
 > 아래 표만 믿지 말고 실제 config 파일과 대조하세요.
@@ -30,8 +31,8 @@
 | 10. BGL 라운드 스코프 확정 | ✅ 완료 (2026-10-13) | §스코프 이력 2026-10-13 |
 | 11. BGL 이상 판정 기준(`num_candidates`) 결정 | ✅ 완료 (2026-10-13, g=9) | §스코프 이력 2026-10-13 |
 | 12. BGL 학습 | ✅ 완료 (2026-11-02 18:15, 30에폭, best epoch 30, val_loss 0.1406, 로컬 GPU 이어 학습) | §3, §스코프 이력 2026-10-31 |
-| 12-1. 서빙 스택 데이터셋 분리 + 서빙 데이터셋 검증 장치 | ✅ 코드 수정 완료 / ⬜ 실제 기동 검증 대기 | §스코프 이력 2026-10-31 |
-| 12-2. BGL 서빙 패키징·로컬 검증 | ⬜ 다음 착수 | §9 |
+| 12-1. 서빙 스택 데이터셋 분리 + 서빙 데이터셋 검증 장치 | ✅ 완료 (코드 10-31, 실제 기동 검증 2026-11-04) | §스코프 이력 2026-10-31, 11-04 |
+| 12-2. BGL 서빙 패키징·로컬 검증 | ✅ 완료 (2026-11-04, HDFS·BGL 모두 세 프레임워크 응답 200건 일치, 드라이런 통과) | §스코프 이력 2026-11-04 |
 | 13. BGL EC2 벤치마크·분석 | ⬜ 대기 | §9 |
 | 병행 A. CI — 자동 검사 (GitHub Actions) | ✅ 완료 (2026-11-02, GitHub에서 static·smoke·images 통과, Triton 포함 세 프레임워크 응답 일치) | §스코프 이력 2026-11-02 |
 | 병행 B. CD — 서빙 이미지 레지스트리 푸시 | ✅ 완료 (2026-11-02, ghcr.io 공개 이미지 3종. 실험 절차에서 이 이미지를 쓸지는 미결정) | §스코프 이력 2026-11-02 |
@@ -515,6 +516,61 @@ FastAPI·BentoML 이미지는 CUDA 빌드 torch 때문에 각각 수 GB라 ECR �
 **바꾸지 않은 것**: EC2와 docker-compose는 지금처럼 Dockerfile로 직접 빌드한다.
 EC2에서 이 이미지를 받아 쓰도록 바꾸는 것은 측정 절차 변경이라 별도로 결정한다.
 
+### 2026-11-04 — BGL 서빙 패키징, 실제 체크포인트로 로컬 검증 (10-31 변경의 기동 검증)
+
+**서빙 패키징** (§9 3단계):
+- Triton: `setup_model.py --dataset bgl` → `serving/triton/models/bgl/`. `config.pbtxt`는
+  HDFS와 비교해 입력 `dims [9, 29]→[9, 991]`, 출력 `[29]→[991]`만 다르고 dynamic
+  batching·`KIND_GPU` 등 나머지는 동일. 저장소의 `model.pt`가 학습 산출물
+  `deeplog.ts`와 SHA-256이 같음을 확인했다.
+- BentoML: 로컬 `bentoml_home` 볼륨이 비어 있어 HDFS·BGL 둘 다 새 이름으로 등록했다
+  (`deeplog-hdfs` 237 KiB, `deeplog-bgl` 1.41 MiB — 크기 비는 파라미터 수 비와 맞음).
+  README 절차대로 bentoml 컨테이너 안에서 `save_model.py --dataset <ds>` 실행.
+- 10-31 서빙 코드 변경을 반영해 서빙 이미지 3종을 다시 빌드했다.
+
+**로컬 검증** (§9 4단계, Windows Docker Desktop, GPU, 실제 체크포인트): CLAUDE.md
+검증 절차를 `ci/check_serving.py`로 실행했다. 테스트 데이터 앞부분은 BGL의 경우 같은
+시퀀스(전부 0)가 반복되므로, 두 데이터셋 모두 `test.npy` 전체에서 무작위 200개
+(seed 0)를 뽑아 입력으로 썼다(서로 다른 키 수: HDFS 15, BGL 73).
+
+| 검증 | HDFS | BGL |
+|---|---|---|
+| `/health` dataset (세 프레임워크) | 모두 hdfs | 모두 bgl |
+| `/health` window_size·num_candidates | 10·9 공통 | 10·9 공통 |
+| `/predict` 200건 — 키·타입·후보·확률(오차 1e-4)·`is_anomaly` | 일치 | 일치 |
+| FastAPI 1순위 후보 평균 확률 | 0.929 | 0.894 |
+
+`DEEPLOG_DATASET` 값만 바꿔 다시 띄웠을 때 세 프레임워크가 함께 bgl 모델로 바뀌었다
+— 10-31 데이터셋 분리 변경이 실제 컨테이너에서 동작함을 확인(CI는 compose 설정
+해석까지만 검사하고 컨테이너 동작은 보지 않으므로 이 확인이 필요했다).
+
+- 기동 순서 주의: 네 서비스를 한꺼번에 `up`하면 Triton 래퍼가 Triton 서버 ready
+  전에 연결을 시도하다 종료된다. `run_benchmark.sh`는 ready를 기다린 뒤 래퍼를
+  띄우므로(`wait_for_triton_ready`) 측정에는 문제가 없고, 수동 검증 때도 같은 순서로
+  띄워야 한다.
+
+**벤치마크 드라이런** — 서빙 데이터셋 검증 장치 확인:
+- `run_benchmark.sh`는 출력 위치가 `experiments/results`로 고정이라, 그대로 로컬
+  드라이런을 돌리면 "로컬 결과를 `experiments/results/`에 저장하지 않는다" 규칙을
+  어기게 된다. 출력 위치를 바꾸는 `RESULTS_DIR` 환경변수를 추가했다(기본값은
+  `experiments/results` 그대로 — EC2 공식 측정은 지정하지 않고 실행).
+- `RESULTS_DIR=<임시> DURATION=5 CONCURRENCY=1 CYCLES=1 bash experiments/run_benchmark.sh bgl`
+  → 세 프레임워크 모두 `서빙 데이터셋 확인: bgl`, manifest에 `served_dataset=bgl`
+  기록. `experiments/results/`는 변경 없음.
+- 첫 드라이런에서는 FastAPI 0건·BentoML 지연 1.9초의 이상값이 나왔다. 원인을
+  떼어 보았으나(직접 요청 45~65ms, 콜드 스타트 첫 요청 1.2초 — 5초 워밍업 안,
+  자원 모니터링 유무 차이 없음) 재현되지 않았고, 다시 돌린 드라이런은 세
+  프레임워크 모두 p50 약 80ms로 정상이었다. 직전의 대용량 이미지 다운로드·빌드로
+  인한 일시적 부하로 보이나 확정하지 못했다. EC2에서 같은 현상이 보이면 다시 본다.
+
+**로컬 한정 현상** (EC2 측정과 무관, CLAUDE.md 검증 절에도 기록):
+- Windows Docker Desktop에서는 `docker stats` 한 번에 약 5초가 걸려, 5초 측정
+  구간에 자원 샘플이 잡히지 않고 `cpu=None`이 나온다.
+- 로컬 처리량이 지연시간에 비해 낮다(c=1에서 p50 약 80ms인데 3~4 rps — 요청
+  사이 공백이 있음). EC2 HDFS 결과는 c=1에서 rps ≈ 1000/평균 지연(FastAPI 438
+  rps, 평균 2.2ms)으로 맞으므로, 같은 코드에서 Windows 클라이언트 쪽 현상으로 보고
+  더 파지 않았다.
+
 ---
 
 ## 1. 연구 개요
@@ -870,7 +926,10 @@ JSON 스키마는 변경 없음.
 - **서빙 데이터셋 검증**(2026-10-31 추가): 데이터셋마다 `DEEPLOG_DATASET`을
   export해 세 프레임워크가 같은 데이터셋 모델을 띄우게 하고, 헬스체크 직후
   `/health`의 `dataset`이 기대값과 다르면 측정 없이 전체를 중단한다. 확인된 값은
-  manifest에 `served_dataset=`으로 기록(§스코프 이력 2026-10-31).
+  manifest에 `served_dataset=`으로 기록(§스코프 이력 2026-10-31). 실제 컨테이너
+  드라이런으로 확인(§스코프 이력 2026-11-04).
+- **출력 위치**: 기본 `experiments/results/`. 로컬 드라이런만 `RESULTS_DIR`로 바꾼다
+  (2026-11-04 추가, 공식 측정은 기본값).
 - **자원 사용률 로깅**: `--container <docker container id>`(docker stats
   기반 CPU%·메모리) + `--monitor-gpu`(nvidia-smi 기반 GPU 사용률·메모리)를
   latency 측정과 동일한 `time.time()` 타임스탬프로 백그라운드 샘플링(기본
@@ -1016,20 +1075,17 @@ FastAPI·BentoML은 cycle1~5(n=5, 8/5 측정), **Triton은 cycle4~8(n=5, 전부
 ## 9. 다음 단계 — BGL 라운드
 
 HDFS 결과는 확정됐다(§8). BGL 라운드 스코프는 2026-10-13에 확정됐고, 학습은
-2026-10-31에 시작했다(§스코프 이력 10-13, 10-31). 열린 항목은 서빙 스택 변경의
-실제 기동 검증 하나다(4번에서 처리). 진행 순서:
+2026-10-31에 시작했다(§스코프 이력 10-13, 10-31). 학습·패키징·로컬 검증까지
+끝나(11-02, 11-04) 남은 것은 EC2 공식 측정과 분석이다. 진행 순서:
 
 1. ~~이상 판정 기준 결정~~ — 완료. HDFS와 같은 g=9(§스코프 이력 2026-10-13).
 2. ~~학습~~ — 완료(2026-11-02). 30에폭, best val_loss 0.1406(§3).
-3. **서빙 패키징** — `serving/bentoml/save_model.py`와
-   `serving/triton/setup_model.py`를 `--dataset bgl`로 실행. 결과는 데이터셋별로
-   분리 저장된다(BentoML `deeplog-bgl`, Triton `serving/triton/models/bgl/`).
-4. **로컬 검증** — 10-31 서빙 변경의 기동 검증을 겸한다. 로컬 BentoML 저장소에
-   HDFS를 `save_model.py --dataset hdfs`로 새 이름으로 다시 등록한 뒤,
-   `DEEPLOG_DATASET=hdfs`와 `bgl` 각각으로 세 프레임워크를 띄워 CLAUDE.md 검증
-   절차(`/health`의 `dataset` 값 확인 + 동일 입력 `/predict` 스키마·값 대조)를
-   돌린다. 이어서 짧은 벤치마크 드라이런으로 서빙 데이터셋 검증 장치가 통과하는지
-   본다. 드라이런 결과는 `experiments/results/`에 저장하지 않는다.
+3. ~~서빙 패키징~~ — 완료(2026-11-04). BentoML `deeplog-hdfs`·`deeplog-bgl`, Triton
+   `serving/triton/models/bgl/`(§스코프 이력 11-04).
+4. ~~로컬 검증~~ — 완료(2026-11-04). HDFS·BGL 모두 세 프레임워크 응답 200건 일치,
+   `RESULTS_DIR` 드라이런으로 서빙 데이터셋 검증 장치 통과(§스코프 이력 11-04).
+   EC2에서는 `bootstrap_ec2.sh`가 S3에서 받은 체크포인트로 Triton 저장소 생성과
+   BentoML 등록(`deeplog-<ds>`)을 데이터셋마다 자동으로 한다.
 5. **EC2 공식 측정** — 데이터·체크포인트를 S3에 올리고 §6.3 절차로 기동,
    `bash experiments/run_benchmark.sh bgl`(옵션 없이 = HDFS와 같은 조건).
    `run_manifest_*.txt`에 프레임워크별 `served_dataset=bgl`이 찍혔는지 확인한다.

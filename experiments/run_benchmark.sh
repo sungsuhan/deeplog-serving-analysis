@@ -32,7 +32,12 @@
 # CSV 파일 단위라 겹치지 않는 한 기존 사이클을 덮어쓰지 않는다.
 #   CYCLE_START=4 CYCLES=5 bash experiments/run_benchmark.sh hdfs
 #
-# 환경변수로 조정 가능: DURATION, CONCURRENCY, CYCLES, CYCLE_START
+# 환경변수로 조정 가능: DURATION, CONCURRENCY, CYCLES, CYCLE_START, RESULTS_DIR
+#
+# RESULTS_DIR는 로컬 드라이런 전용이다 — 로컬 결과는 experiments/results/에 저장하지
+# 않는다는 규칙(CLAUDE.md)을 지키려고 출력 위치만 바꾼다. 공식 측정(EC2)은 지정하지
+# 않고 기본값 그대로 실행한다.
+#   RESULTS_DIR=/tmp/dryrun DURATION=5 CONCURRENCY=1 CYCLES=1 bash experiments/run_benchmark.sh bgl
 set -euo pipefail
 
 DATASET="${1:-all}"
@@ -40,7 +45,7 @@ DURATION="${DURATION:-30}"
 CONCURRENCY="${CONCURRENCY:-1 4 8 16 32 64}"
 CYCLES="${CYCLES:-5}"
 CYCLE_START="${CYCLE_START:-1}"
-RESULTS_DIR="experiments/results"
+RESULTS_DIR="${RESULTS_DIR:-experiments/results}"
 PYTHON="python"
 COMPOSE_FILE="docker/docker-compose.yml"
 HEALTH_TIMEOUT_S="${HEALTH_TIMEOUT_S:-120}"

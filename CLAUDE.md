@@ -169,4 +169,8 @@ EC2 측정 전에는 아래 수동 절차를 실제 체크포인트로 한 번 �
   §연구 목적에 명시된 값(HDFS 2.93%, BGL 7.34%)과 크게 벗어나지 않는지 확인.
 - **벤치마크 스크립트(`experiments/benchmark.py`) 변경 후**: `--concurrency 1
   --duration 5` 같은 짧은 설정으로 로컬에서 1회 드라이런 — 단, 이 결과는 위 규칙대로
-  `experiments/results/`에 저장하지 않는다.
+  `experiments/results/`에 저장하지 않는다. `run_benchmark.sh` 전체 흐름(기동·서빙
+  데이터셋 확인·종료)을 볼 때는 출력 위치를 바꿔서 돌린다:
+  `RESULTS_DIR=<임시 디렉토리> DURATION=5 CONCURRENCY=1 CYCLES=1 bash experiments/run_benchmark.sh <ds>`.
+  로컬(Windows Docker Desktop)에서는 `docker stats` 한 번에 약 5초가 걸려 5초 측정
+  구간에 자원 샘플이 안 잡히고 `cpu=None`으로 나올 수 있다 — 로컬 한정 현상.
